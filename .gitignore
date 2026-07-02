@@ -1,0 +1,14 @@
+build/
+build-*/
+*.DS_Store
+.env
+node_modules/
+dist/
+.agents/
+skills-lock.json
+data/.mothprobe/bin/
+data/.mothprobe/brains/
+data/.mothprobe/caches/
+data/.mothprobe/logs/
+data/.mothprobe/audit.jsonl
+data/.mothprobe/config.toml
