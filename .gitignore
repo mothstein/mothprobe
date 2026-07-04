@@ -2,8 +2,12 @@ build/
 build-*/
 *.DS_Store
 .env
+.mothprobe/
 node_modules/
 dist/
+client/.mothprobe/
+client/data/config.json
+client/data/.mothprobe/
 .agents/
 skills-lock.json
 data/.mothprobe/bin/

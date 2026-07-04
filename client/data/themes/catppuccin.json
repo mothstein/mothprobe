@@ -1,0 +1,14 @@
+{
+  "name": "Catppuccin",
+  "background": "#1e1e2e",
+  "text": "#cdd6f4",
+  "accent": "#cba6f7",
+  "muted": "#a6adc8",
+  "border": "#585b70",
+  "user": "#89dceb",
+  "ai": "#a6e3a1",
+  "error": "#f38ba8",
+  "success": "#a6e3a1",
+  "warning": "#f9e2af",
+  "codeBackground": "#313244"
+}

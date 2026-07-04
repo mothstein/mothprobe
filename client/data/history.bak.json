@@ -1,0 +1,39 @@
+[
+  {
+    "type": "mcp",
+    "content": "Connected to MCP daemon.",
+    "id": "17831056792650.498544258729952"
+  },
+  {
+    "type": "mcp",
+    "content": "[2026-07-04 02:07:59.217] [info] mothprobe_mcp started",
+    "id": "17831056793400.5831899392288864"
+  },
+  {
+    "type": "mcp",
+    "content": "[2026-07-04 02:07:59.442] [info] client initialized",
+    "id": "17831056794600.673579487259694"
+  },
+  {
+    "type": "user",
+    "content": "/resume",
+    "mode": "chat",
+    "id": "17831056887230.2470968991510295"
+  },
+  {
+    "type": "system",
+    "content": "> No previous session found.",
+    "id": "17831056887240.44106660959368227"
+  },
+  {
+    "type": "user",
+    "content": "/permission",
+    "mode": "chat",
+    "id": "17831056942160.2769444032127244"
+  },
+  {
+    "type": "system",
+    "content": "### Shell Permissions\n\nAllowed commands: dir, ls, echo, whoami, hostname, ver\n\nUse `/permission grant <cmd>` or `/permission revoke <cmd>`.",
+    "id": "17831056942160.13787020243584114"
+  }
+]

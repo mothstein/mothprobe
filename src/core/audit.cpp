@@ -33,6 +33,14 @@ void AuditLogger::FileAttachment(const std::filesystem::path& path, bool accepte
   Event("file_attachment", {{"path_hash", HashPath(path)}, {"accepted", accepted}});
 }
 
+void AuditLogger::LlmChat(const std::string& provider, std::size_t request_messages,
+                          std::size_t response_length, bool ok) {
+  Event("llm_chat", {{"provider", provider},
+                     {"request_messages", request_messages},
+                     {"response_length", response_length},
+                     {"ok", ok}});
+}
+
 std::string AuditLogger::Timestamp() {
   const auto now = std::chrono::system_clock::now();
   const auto time = std::chrono::system_clock::to_time_t(now);

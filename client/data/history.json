@@ -1,0 +1,75 @@
+[
+  {
+    "type": "mcp",
+    "content": "Connected to MCP daemon.",
+    "id": "17831056792650.498544258729952"
+  },
+  {
+    "type": "mcp",
+    "content": "[2026-07-04 02:07:59.217] [info] mothprobe_mcp started",
+    "id": "17831056793400.5831899392288864"
+  },
+  {
+    "type": "mcp",
+    "content": "[2026-07-04 02:07:59.442] [info] client initialized",
+    "id": "17831056794600.673579487259694"
+  },
+  {
+    "type": "user",
+    "content": "/resume",
+    "mode": "chat",
+    "id": "17831056887230.2470968991510295"
+  },
+  {
+    "type": "system",
+    "content": "> No previous session found.",
+    "id": "17831056887240.44106660959368227"
+  },
+  {
+    "type": "user",
+    "content": "/permission",
+    "mode": "chat",
+    "id": "17831056942160.2769444032127244"
+  },
+  {
+    "type": "system",
+    "content": "### Shell Permissions\n\nAllowed commands: dir, ls, echo, whoami, hostname, ver\n\nUse `/permission grant <cmd>` or `/permission revoke <cmd>`.",
+    "id": "17831056942160.13787020243584114"
+  },
+  {
+    "type": "system",
+    "content": "> Restored previous session.",
+    "id": "17831060023400.8897026621374823"
+  },
+  {
+    "type": "user",
+    "content": "/skills",
+    "mode": "chat",
+    "id": "17831060154340.6764866753530147"
+  },
+  {
+    "type": "mcp",
+    "content": "### Available Skills & Agents\n\n```json\n{\n  \"prompts\": [\n    {\n      \"description\": \"Plan a scope-safe passive audit workflow.\",\n      \"name\": \"passive_audit\",\n      \"title\": \"Passive Audit Plan\"\n    },\n    {\n      \"description\": \"Summarize passive audit findings into a report.\",\n      \"name\": \"report_summary\",\n      \"title\": \"Report Summary\"\n    },\n    {\n      \"description\": \"Skill to guide agents to use tools, review code, and find bugs.\",\n      \"name\": \"mothprobe-skills\",\n      \"title\": \"MothProbe Skills\"\n    }\n  ]\n}\n```",
+    "id": "17831060154830.9105840511358049"
+  },
+  {
+    "type": "user",
+    "content": "@[tsconfig.json]",
+    "mode": "chat",
+    "id": "17831060363300.7720567591451547"
+  },
+  {
+    "type": "ai",
+    "content": "",
+    "isLoading": true,
+    "id": "17831060363300.7544889364502578",
+    "thinkingStartedAt": 1783106036330
+  },
+  {
+    "type": "system",
+    "content": "This is a solid TypeScript configuration file for a **React + Node.js** project! Here's a breakdown of what each option does:\n\n## **Key Features:**\n\n### **1. Modern JavaScript/TypeScript Target**\n- `\"target\": \"ES2022\"` - Uses modern ES2022 features\n- `\"module\": \"NodeNext\"` - Uses Node.js's native ESM support\n- `\"moduleResolution\": \"NodeNext\"` - Resolves modules like Node.js does\n\n### **2. React Support**\n- `\"jsx\": \"react\"` - Enables React JSX compilation\n- `\"types\": [\"node\", \"react\"]` - Includes type definitions for Node.js and React\n\n### **3. Strict Type Checking**\n- `\"strict\": true` - Enables all strict type-checking options\n- `\"forceConsistentCasingInFileNames\": true` - Prevents case-sensitivity issues\n- `\"skipLibCheck\": true` - Skips type checking of declaration files for faster compilation\n\n### **4. Project Structure**\n- `\"rootDir\": \"src\"` - Source files are in `src/` directory\n- `\"outDir\": \"dist\"` - Compiled output goes to `dist/` directory\n- `\"include\"` pattern covers all TypeScript files in `src/`\n\n### **5. Compatibility**\n- `\"esModuleInterop\": true` - Better compatibility with CommonJS modules\n\n## **Potential Improvements/Considerations:**\n\n1. **Add `baseUrl` and `paths` for aliases:**\n```json\n\"baseUrl\": \"src\",\n\"paths\": {\n  \"@/*\": [\"*\"],\n  \"@components/*\": [\"components/*\"]\n}\n```\n\n2. **Consider adding these for better development:**\n```json\n\"sourceMap\": true,\n\"declaration\": true,\n\"declarationMap\": true,\n\"removeComments\": false\n```\n\n3. **If using testing frameworks, add:**\n```json\n\"types\": [\"node\", \"react\", \"jest\", \"@testing-library/jest-dom\"]\n```\n\n4. **For production builds:**\n```json\n\"noEmitOnError\": true,\n\"incremental\": true\n```\n\n## **Usage Notes:**\n- This config expects your source code in a `src/` folder\n- Output will be in `dist/` folder\n- Works with both `.ts` and `.tsx` files\n- Compatible with both ESM and CommonJS modules in Node.js\n\nIs there anything specific about this configuration you'd like to discuss or modify?",
+    "id": "17831060365460.8736325330788696",
+    "isTyping": false,
+    "isLoading": false
+  }
+]

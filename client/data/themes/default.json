@@ -1,0 +1,14 @@
+{
+  "name": "Default",
+  "background": "#1f2130",
+  "text": "#f7f7fb",
+  "accent": "#c084fc",
+  "muted": "#a6adc8",
+  "border": "#5b6078",
+  "user": "#7dd3fc",
+  "ai": "#a7f3d0",
+  "error": "#f87171",
+  "success": "#86efac",
+  "warning": "#fbbf24",
+  "codeBackground": "#303244"
+}

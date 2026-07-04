@@ -53,7 +53,15 @@ std::optional<RpcMessage> ReadMessage() {
   if (!raw) {
     return std::nullopt;
   }
-  return RpcMessage{nlohmann::json::parse(*raw)};
+  auto parsed = nlohmann::json::parse(*raw, nullptr, false);
+  if (parsed.is_discarded()) {
+    return RpcMessage{
+        {{"jsonrpc", "2.0"},
+         {"id", nullptr},
+         {"error", {{"code", -32700}, {"message", "Parse error"}}}},
+        true};
+  }
+  return RpcMessage{std::move(parsed), false};
 }
 
 void WriteMessage(const nlohmann::json& value) {
@@ -67,6 +75,13 @@ nlohmann::json Result(nlohmann::json id, nlohmann::json result) {
 
 nlohmann::json Error(nlohmann::json id, int code, const std::string& message) {
   return {{"jsonrpc", "2.0"}, {"id", std::move(id)}, {"error", {{"code", code}, {"message", message}}}};
+}
+
+nlohmann::json Error(nlohmann::json id, int code, const std::string& message,
+                     nlohmann::json data) {
+  return {{"jsonrpc", "2.0"},
+          {"id", std::move(id)},
+          {"error", {{"code", code}, {"message", message}, {"data", std::move(data)}}}};
 }
 
 nlohmann::json RequestId(const nlohmann::json& request) {

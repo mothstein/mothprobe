@@ -20,7 +20,7 @@ int main() {
     logger->info("mothprobe_mcp started");
 
     while (auto message = mothprobe::mcp::ReadMessage()) {
-      auto response = server.Dispatch(message->value);
+      auto response = message->direct_response ? message->value : server.Dispatch(message->value);
       if (!response.is_null() && !response.empty()) {
         mothprobe::mcp::WriteMessage(response);
       }

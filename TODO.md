@@ -4,6 +4,8 @@ MothProbe is an AI-assisted penetration testing and cybersecurity assessment pla
 
 The product architecture is split into a TypeScript terminal frontend and a C++ MCP backend. The TypeScript TUI owns the interactive user experience, onboarding, chat workflows, and command palette. The C++ `mothprobe_mcp` daemon owns JSON-RPC/MCP transport, safe tool execution, runtime layout, cache access, scope validation, and auditable security operations.
 
+The next backend architecture target is `mothon-cpp`: a MothProbe-specific C++ MCP backend built by adapting `hkr04/cpp-mcp` as the protocol substrate, then adding MothProbe security, audit, LLM, tool, and agent orchestration layers on top. See `docs/MOTHON_CPP.md`.
+
 ```mermaid
 graph TD
     User[User Request] --> TUI[TypeScript TUI Frontend]
@@ -21,6 +23,11 @@ graph TD
 
     Findings --> Analyzer[AI Analysis Layer]
     Analyzer --> Report[Markdown / HTML / PDF Report]
+
+    MCP --> Data[Database SDK Layer]
+    Data --> LocalStore[Local .mothprobe Store]
+    Data --> CloudStore[Supabase / Firebase / MongoDB]
+    MCP --> License[License Gate]
 
     Scope --> Audit[Audit Log]
     Approval --> Audit
@@ -49,11 +56,11 @@ Set up a stable C++ base that can support protocol handling, scanning tools, OSI
   - [x] `libsodium` for cryptographic utilities.
   - [x] Removed the legacy FTXUI C++ TUI implementation; production frontend direction is TypeScript.
 - [/] TypeScript TUI Frontend Client
-  - [x] Initialize TypeScript + Node.js project for the TUI frontend under `frontend/`.
-  - [ ] Integrate TUI libraries like **Ink** (React for CLIs) or **neo-blessed** for richer rendering.
+  - [x] Initialize TypeScript + Node.js project for the TUI frontend under `client/`.
+  - [x] Integrate **Ink** (React for CLIs) for terminal rendering.
   - [x] Implement stdio-based MCP client to spawn and communicate with `mothprobe_mcp` C++ backend.
-  - [ ] Implement onboarding experience and LLM provider configuration directly in TypeScript (easier SDK integrations).
-  - [ ] Design a terminal UI experience inspired by Claude Code, Codex, OpenCode, and similar agentic coding/security tools.
+  - [/] Implement onboarding experience and LLM provider configuration UI in TypeScript, with secrets saved by the C++ MCP backend.
+  - [/] Design a terminal UI experience inspired by Claude Code, Codex, OpenCode, and similar agentic coding/security tools.
   - [x] Build a TypeScript CLI/TUI entry point (`mothprobe-tui` script).
   - [/] Add a chat-oriented main panel for user prompts, AI responses, and scan explanations.
   - [ ] Add a live tool activity panel showing MCP calls, scanner status, OSINT collectors, progress, and errors.
@@ -76,20 +83,25 @@ Set up a stable C++ base that can support protocol handling, scanning tools, OSI
   - [ ] Define visual states for idle, thinking, scanning, waiting for approval, error, cancelled, and completed.
   - [ ] Add TUI smoke tests for layout rendering and basic keyboard events.
 - [ ] Build hygiene
+  - [ ] Evaluate and vendor `hkr04/cpp-mcp` as the protocol substrate for `mothon-cpp`.
+  - [ ] Add a wrapper layer so application code depends on `mothon-cpp` interfaces, not raw upstream SDK headers.
+  - [ ] Keep `mothprobe_mcp` executable compatibility while migrating internals.
   - [ ] Disable third-party test registration in normal project test runs.
   - [ ] Add a project-only test target.
   - [ ] Add GitHub Actions for Windows, Linux, and macOS.
   - [ ] Add release build configuration and artifact packaging.
 - [ ] Configuration
-  - [/] Define `data/.mothprobe/config.toml` schema.
+  - [/] Define `.mothprobe/config.toml` schema.
   - [/] Add config loader with validation and defaults.
-  - [x] Add environment variable override support.
+  - [ ] Add explicit non-secret environment variable overrides where useful.
 
 ---
 
 ## Phase 2: MCP Daemon, Runtime Layout, and JSON-RPC Transport
 
 Build the MCP daemon and runtime layer that lets AI agents call MothProbe tools safely. The daemon should own protocol handling, tool orchestration, cache access, and chat history persistence.
+
+Backend direction: evolve the current daemon into `mothon-cpp`, using `cpp-mcp` for mature MCP protocol handling while keeping MothProbe-specific safety, audit, provider, and tool orchestration in owned modules.
 
 - [/] Runtime directory contract
   - [x] Define `.mothprobe/bin/` as the location for the MCP daemon binary and supporting tool binaries.
@@ -130,6 +142,7 @@ Build the MCP daemon and runtime layer that lets AI agents call MothProbe tools 
   - [x] Parse and validate JSON-RPC messages.
   - [x] Return standard errors for invalid JSON, invalid requests, and unknown methods.
   - [/] Add unit tests for malformed and valid protocol messages.
+  - [ ] Replace the local protocol skeleton with the `mothon-cpp` wrapper after parity tests pass.
 - [x] Stdio transport
   - [x] Implement MCP-compatible stdio read/write loop.
   - [x] Ensure stdout is reserved for protocol messages only.
@@ -154,6 +167,33 @@ Build the MCP daemon and runtime layer that lets AI agents call MothProbe tools 
   - [ ] Implement `resources/read` for scan logs, cached findings, chat history, and generated reports.
   - [ ] Implement `prompts/list`.
   - [ ] Implement `prompts/get` for approved pentest and OSINT workflows.
+
+---
+
+## Phase 2B: Mothon C++ Backend Migration
+
+Use `hkr04/cpp-mcp` to avoid spending too much time rebuilding protocol machinery. The goal is not to ship a generic SDK, but to create a security-first backend for MothProbe.
+
+- [ ] Legal and dependency review
+  - [ ] Confirm MIT license compatibility and preserve upstream license notices.
+  - [ ] Decide between vendored source and git submodule under `third_party/cpp-mcp`.
+  - [ ] Confirm OpenSSL/cpp-httplib build compatibility on Windows MSVC.
+- [ ] Protocol wrapper
+  - [ ] Create `src/mothon/protocol/` wrapper interfaces.
+  - [ ] Wrap MCP server startup, lifecycle, tool registration, resources, prompts, and errors.
+  - [ ] Keep stdout clean for stdio protocol messages.
+  - [ ] Add parity tests for `initialize`, `tools/list`, `tools/call`, and `llm/chat`.
+- [ ] Tool registry
+  - [ ] Add typed tool metadata: name, description, schema, risk class, scope requirements, approval policy, timeout, and concurrency.
+  - [ ] Map tool metadata into MCP tool schemas.
+  - [ ] Add clear coming-soon states for tools not implemented yet.
+- [ ] Agent swarm foundation
+  - [ ] Add bounded agent coordinator with run IDs and max step count.
+  - [ ] Add `planner`, `scope_guard`, `operator`, `analyst`, `reviewer`, and `reporter` roles.
+  - [x] Configure `code_writer`, `bug_analyzer`, and `smoke_tester` agents in `.agents/agents/`.
+  - [x] Establish the main orchestrator (Antigravity) to manage the agent swarm and update TODOs.
+  - [ ] Require approval before active or intrusive tools.
+  - [ ] Audit every agent step and tool call.
 
 ---
 
@@ -250,7 +290,7 @@ Use AI for interpretation, prioritization, and reporting while keeping raw tool 
   - [/] Support non-streaming and streaming responses.
   - [ ] Add provider capability metadata.
   - [/] Add model configuration in TOML.
-  - [ ] Move production provider orchestration into the TypeScript frontend while keeping C++ focused on MCP/tool backend.
+  - [x] Keep production provider orchestration inside the C++ MCP backend.
 - [/] Cloud providers
   - [/] Add OpenAI-compatible API support.
   - [/] Add OpenRouter support.
@@ -303,7 +343,97 @@ Turn raw findings into useful deliverables for engineers, security teams, and au
 
 ---
 
-## Phase 8: Testing, Hardening, and Release
+## Phase 8: Database SDK, Cloud Sync, and Project Persistence
+
+Build a database abstraction that keeps Community local-first while enabling Professional team workflows through managed or self-hosted backends.
+
+- [ ] Storage model
+  - [ ] Define canonical entities: workspace, project, scope, target, scan run, tool event, finding, evidence, report, chat session, memory item, and license state.
+  - [ ] Define stable IDs, timestamps, ownership metadata, schema version, and migration version for every persisted entity.
+  - [ ] Keep local `.mothprobe/` storage as the default Community backend.
+  - [ ] Separate sensitive local-only data from data allowed to sync.
+  - [ ] Add redaction rules before storing secrets, provider keys, raw prompts, and sensitive findings.
+- [ ] Database SDK interface
+  - [ ] Create a backend-neutral repository/service API for project data.
+  - [ ] Support CRUD and query operations for projects, scan runs, findings, reports, and chat sessions.
+  - [ ] Add transaction-like write batching for scan runs and audit events.
+  - [ ] Add pagination for large findings, audit logs, and chat histories.
+  - [ ] Add optimistic concurrency or revision checks for synced data.
+- [ ] Local database backend
+  - [ ] Evaluate SQLite as the durable local database for structured project data.
+  - [ ] Keep JSONL audit logs append-only for forensic review.
+  - [ ] Add migration runner for local schema changes.
+  - [ ] Add export/import for offline backups.
+- [ ] Supabase adapter
+  - [ ] Design PostgreSQL schema for workspaces, projects, scan runs, findings, reports, and memberships.
+  - [ ] Add Supabase REST/PostgREST or native HTTP integration from the C++ backend.
+  - [ ] Support row-level security expectations for team workspaces.
+  - [ ] Document required tables, indexes, and policies.
+- [ ] Firebase adapter
+  - [ ] Evaluate Firestore document layout for projects, findings, reports, and chat sessions.
+  - [ ] Add service-account or user-token based auth strategy.
+  - [ ] Define sync behavior for offline-first TUI sessions.
+  - [ ] Document rate limits and cost controls.
+- [ ] MongoDB adapter
+  - [ ] Define collections and indexes for scan-heavy workloads.
+  - [ ] Evaluate MongoDB Atlas Data API or native driver integration.
+  - [ ] Add schema validation rules for key collections.
+  - [ ] Document self-hosted and Atlas deployment modes.
+- [ ] Sync and conflict handling
+  - [ ] Add explicit sync command and status view in the TypeScript TUI.
+  - [ ] Add conflict detection for edited reports and project metadata.
+  - [ ] Keep audit events append-only and never silently merge destructive changes.
+  - [ ] Add retry, backoff, and resumable upload behavior for large evidence bundles.
+- [ ] Security and privacy
+  - [ ] Encrypt sensitive local records when configured.
+  - [ ] Never sync API keys or license private material to third-party databases.
+  - [ ] Add per-project data classification: local-only, sync-allowed, and redacted.
+  - [ ] Add audit events for every database sync and remote write.
+
+---
+
+## Phase 9: License Key, Editions, and Professional Plan
+
+Implement a clear open-core model. The Community edition should remain useful for local authorized security work, while Professional unlocks team, scale, and commercial productivity features.
+
+- [ ] Edition model
+  - [ ] Define `community`, `professional`, and future `enterprise` edition constants in the C++ backend.
+  - [ ] Keep edition decisions in `mothprobe_mcp`, not only in the TypeScript client.
+  - [ ] Expose edition and capability metadata through JSON-RPC for the TUI.
+  - [ ] Add clear UI messages when a feature is unavailable in Community.
+- [ ] License key format
+  - [ ] Design signed license payload with customer ID, plan, expiry, seats, feature flags, and issued-at timestamp.
+  - [ ] Verify signatures locally using public-key cryptography.
+  - [ ] Store activated license metadata under `.mothprobe/license.json`.
+  - [ ] Never store raw payment provider secrets or private signing keys in the client or repository.
+- [ ] Activation workflow
+  - [ ] Add `/license` command in the TypeScript TUI.
+  - [ ] Add license input, validation result, expiry, and active feature display.
+  - [ ] Support offline grace period for Professional users.
+  - [ ] Add clear failure states: invalid signature, expired license, exceeded seats, network error, and revoked license.
+- [ ] Community limitations
+  - [ ] Limit concurrent scan/tool executions.
+  - [ ] Limit number of active projects or retained scan runs.
+  - [ ] Limit report export templates to basic Markdown/HTML.
+  - [ ] Keep local-only database backend by default.
+  - [ ] Keep advanced team sync, scheduled scans, and automation behind Professional.
+  - [ ] Keep dangerous security controls identical across editions; never weaken safety in paid plans.
+- [ ] Professional capabilities
+  - [ ] Unlock higher concurrency and larger project retention.
+  - [ ] Unlock Supabase/Firebase/MongoDB sync adapters.
+  - [ ] Unlock team workspace metadata and shared reports.
+  - [ ] Unlock advanced report templates and export automation.
+  - [ ] Unlock extended chat memory retention and project knowledge base features.
+  - [ ] Unlock provider/model profiles for production workflows.
+- [ ] Enforcement and audit
+  - [ ] Add capability checks before restricted MCP methods run.
+  - [ ] Add audit events for activation, deactivation, license validation, and restricted feature attempts.
+  - [ ] Add tests that Community cannot call Professional-only methods.
+  - [ ] Add tests for expired, malformed, tampered, and revoked license payloads.
+
+---
+
+## Phase 10: Testing, Hardening, and Release
 
 Make the system reliable enough for real security workflows.
 

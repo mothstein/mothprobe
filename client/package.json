@@ -1,6 +1,6 @@
 {
   "name": "@mothstein/mothprobe-cli",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha",
   "private": true,
   "type": "module",
   "bin": {
@@ -9,11 +9,21 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
-    "dev": "tsx src/main.ts",
+    "dev": "tsx src/main.tsx",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "gradient-string": "^3.0.0",
+    "ink": "latest",
+    "ink-select-input": "latest",
+    "ink-text-input": "latest",
+    "react": "latest",
+    "zustand": "^4.5.2"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/react": "^18.2.74",
     "tsx": "latest",
     "typescript": "latest"
   }

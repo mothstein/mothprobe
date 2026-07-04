@@ -49,6 +49,14 @@ The project is built for authorized security work: internal security audits, bug
 - Explainable summaries, risk ranking, and report generation.
 - Optional integration with local or cloud LLM providers.
 
+### Database, Sync, and Licensing
+
+- Local-first project data stored under `.mothprobe/` for community workflows.
+- Future database SDK layer for Supabase, Firebase, MongoDB, and self-hosted backends.
+- Optional cloud sync for teams that need shared projects, reports, and audit history.
+- License-key enforcement for Professional features without blocking the Community edition.
+- Clear Community limits for commercial sustainability while keeping the core tool usable.
+
 ## Safety Model
 
 MothProbe should be safe by design:
@@ -81,28 +89,60 @@ graph TD
     Tools --> Audit[Audit Log]
     Scope --> Audit
     Approval --> Audit
+
+    MCP --> Data[Database SDK Layer]
+    Data --> Local[Local .mothprobe Storage]
+    Data --> Cloud[Supabase / Firebase / MongoDB]
+    MCP --> License[License Gate]
 ```
+
+## Editions
+
+MothProbe is planned as a sustainable open-core product:
+
+### Community Edition
+
+- Local-only usage.
+- Single-user workflows.
+- Limited scan concurrency and project count.
+- Basic MCP tools, local audit log, and manual report export.
+- Community support and transparent responsible-use guardrails.
+
+### Professional Edition
+
+- License-key activation.
+- Higher scan concurrency and larger projects.
+- Team/database sync through supported backends.
+- Advanced report templates and export automation.
+- Longer chat/session memory retention.
+- Provider and model management for production workflows.
+- Priority security updates and commercial usage features.
+
+License checks should be implemented in the C++ MCP backend so privileged capability decisions stay auditable and cannot be bypassed by changing the TypeScript UI.
 
 ## Current Status
 
-MothProbe is in early foundation stage. The repository currently focuses on C++ build setup, dependency integration, smoke tests, and the roadmap for the MCP server and security tool engine.
+MothProbe is in early foundation stage. The repository currently focuses on the TypeScript terminal client, C++ MCP backend, dependency integration, smoke tests, MCP tool registry, LLM provider routing, and the roadmap for the security tool engine.
 
-Implemented foundation pieces:
+Implemented foundation pieces include:
 
 - CMake project setup.
 - C++ dependency integration.
 - Catch2 smoke tests.
 - Static runtime configuration for MSVC builds.
-- Initial cross-compilation toolchain files.
+- TypeScript/Ink terminal client direction.
+- JSON-RPC stdio connection to the C++ MCP backend.
+- Runtime layout under `.mothprobe/`.
+- Early LLM provider configuration and MCP routing.
 
 Major work still pending:
 
-- JSON-RPC and MCP protocol implementation.
-- Tool registry and `tools/list` / `tools/call` handlers.
-- Scope validation and approval workflow.
+- Production-grade scope validation and approval workflow.
 - Real scanning modules.
 - OSINT collectors.
-- AI provider abstraction and report generation.
+- Database SDK layer and team sync.
+- License-key activation and edition gating.
+- Report generation.
 
 ## Build
 
@@ -121,9 +161,10 @@ ctest --test-dir build -C Debug -R SmokeTest --output-on-failure
 
 ```text
 src/                 Application and test source code
+client/              TypeScript/Ink terminal client
 tests/               Future integration and protocol tests
 cmake/toolchains/    Cross-compilation toolchain files
-data/.mothprobe/     Local runtime data, config, caches, and model/tool assets
+.mothprobe/          Local runtime data, config, caches, memory, and logs
 third_party/         Vendored dependencies and submodules
 TODO.md              Development roadmap
 ```

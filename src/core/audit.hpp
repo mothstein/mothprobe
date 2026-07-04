@@ -17,6 +17,8 @@ class AuditLogger {
   void UserInput(const std::string& mode, const std::string& text);
   void ShellCommand(const std::string& command, int exit_code);
   void FileAttachment(const std::filesystem::path& path, bool accepted);
+  void LlmChat(const std::string& provider, std::size_t request_messages,
+               std::size_t response_length, bool ok);
 
  private:
   static std::string Timestamp();

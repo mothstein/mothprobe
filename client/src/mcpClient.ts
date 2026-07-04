@@ -1,91 +1,303 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { createInterface, type Interface } from "node:readline";
-import type { Readable, Writable } from "node:stream";
-import type { JsonRpcRequest, JsonRpcResponse } from "./types.js";
+import { spawn, ChildProcess } from 'child_process';
+import { useStore } from './store.js';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
-type Pending = {
-  resolve: (value: JsonRpcResponse) => void;
-  reject: (error: Error) => void;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+let mcpProcess: ChildProcess | null = null;
+let currentExePath = '';
+let rpcId = 1;
+let interrupting = false;
+
+const REQUEST_TIMEOUT_MS = 120_000;
+
+const pendingRequests = new Map<number, {
+  resolve: (res: any) => void;
+  reject: (err: any) => void;
+  timer: NodeJS.Timeout;
+}>();
+
+export type LlmMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
 };
 
-export class McpClient {
-  private child?: ChildProcessByStdio<Writable, Readable, null>;
-  private lines?: Interface;
-  private nextId = 1;
-  private readonly pending = new Map<number, Pending>();
+export type McpErrorData = {
+  provider?: string;
+  kind?: string;
+  http_status?: number;
+  retryable?: boolean;
+  finish_reason?: string;
+  truncated?: boolean;
+};
 
-  constructor(private readonly root: string) {}
+export class McpRequestError extends Error {
+  code?: number;
+  data?: McpErrorData;
 
-  start(): void {
-    const executable = this.resolveExecutable();
-    const child = spawn(executable, [], {
-      cwd: this.root,
-      stdio: ["pipe", "pipe", "inherit"],
-      windowsHide: true
-    });
-    this.child = child;
-    this.lines = createInterface({ input: child.stdout });
-    this.lines.on("line", (line) => this.handleLine(line));
-    child.on("exit", (code) => {
-      for (const wait of this.pending.values()) {
-        wait.reject(new Error(`MCP daemon exited with code ${code ?? "unknown"}`));
-      }
-      this.pending.clear();
-    });
+  constructor(message: string, code?: number, data?: McpErrorData) {
+    super(message);
+    this.name = 'McpRequestError';
+    this.code = code;
+    this.data = data;
+  }
+}
+
+export type LlmResponse = {
+  text: string;
+  provider: string;
+  model?: string;
+  finishReason?: string;
+  truncated: boolean;
+  reasoning?: string;
+};
+
+export type LlmProviderModel = {
+  name: string;
+  configured: boolean;
+  requires_api_key?: boolean;
+  api_key_configured?: boolean;
+  current_model: string;
+  models: string[];
+  max_tokens: number;
+};
+
+export type LlmModelFetchResult = {
+  provider: string;
+  source: string;
+  models: string[];
+};
+
+export function startMcpClient() {
+  const store = useStore.getState();
+  
+  const buildDir = path.resolve(__dirname, '../../build');
+  const possiblePaths = [
+    path.join(buildDir, 'mothprobe_mcp.exe'),
+    path.join(buildDir, 'Debug', 'mothprobe_mcp.exe'),
+    path.join(buildDir, 'Release', 'mothprobe_mcp.exe'),
+  ];
+  
+  let exePath = '';
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      exePath = p;
+      currentExePath = p;
+      break;
+    }
   }
 
-  stop(): void {
-    this.lines?.close();
-    this.child?.stdin.end();
-    this.child?.kill();
+  if (!exePath) {
+    store.addMessage({ type: 'system', content: `[MCP Error] Could not find mothprobe_mcp.exe in ${buildDir}` });
+    return;
   }
 
-  request(method: string, params?: unknown): Promise<JsonRpcResponse> {
-    const child = this.child;
-    if (!child) throw new Error("MCP daemon is not running.");
-    const id = this.nextId++;
-    const request: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      child.stdin.write(`${JSON.stringify(request)}\n`);
-    });
-  }
+  mcpProcess = spawn(exePath, [], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-  notify(method: string, params?: unknown): void {
-    const child = this.child;
-    if (!child) throw new Error("MCP daemon is not running.");
-    const request: JsonRpcRequest = { jsonrpc: "2.0", method, params };
-    child.stdin.write(`${JSON.stringify(request)}\n`);
-  }
-
-  private handleLine(line: string): void {
-    let response: JsonRpcResponse;
+  mcpProcess.on('spawn', async () => {
+    store.setConnected(true);
+    store.addMessage({ type: 'mcp', content: 'Connected to MCP daemon.' });
+    
     try {
-      response = JSON.parse(line) as JsonRpcResponse;
-    } catch {
+      await sendMcpRequest('initialize', {
+        protocolVersion: '2025-11-25',
+        capabilities: {}
+      });
+      if (mcpProcess && mcpProcess.stdin) {
+        mcpProcess.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + '\n');
+      }
+    } catch (e) {
+      store.addMessage({ type: 'system', content: `[MCP Error] Auto-initialize failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  });
+
+  let buffer = '';
+
+  mcpProcess.stdout?.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.id !== undefined && pendingRequests.has(msg.id)) {
+          const promiseHandlers = pendingRequests.get(msg.id)!;
+          clearTimeout(promiseHandlers.timer);
+          if (msg.error) {
+            promiseHandlers.reject(new McpRequestError(msg.error.message || 'MCP request failed', msg.error.code, msg.error.data));
+          } else {
+            promiseHandlers.resolve(msg.result);
+          }
+          pendingRequests.delete(msg.id);
+        } else {
+          store.addMessage({ type: 'mcp', content: `Event: ${JSON.stringify(msg)}` });
+        }
+      } catch (e) {
+        store.addMessage({ type: 'mcp', content: line });
+      }
+    }
+  });
+
+  mcpProcess.stderr?.on('data', (chunk) => {
+    const text = chunk.toString().trim();
+    if (text) store.addMessage({ type: 'mcp', content: text });
+  });
+
+  mcpProcess.on('close', (code) => {
+    store.setConnected(false);
+    if (interrupting) {
+      interrupting = false;
+      setTimeout(() => startMcpClient(), 150);
       return;
     }
-    if (typeof response.id !== "number") return;
-    const wait = this.pending.get(response.id);
-    if (!wait) return;
-    this.pending.delete(response.id);
-    wait.resolve(response);
-  }
+    rejectPending(new McpRequestError(`MCP daemon exited before replying (exit code: ${code})`, -32001, {
+      kind: 'mcp_disconnected',
+      retryable: true
+    }));
+    store.addMessage({ type: 'system', content: `MCP disconnected (exit code: ${code}).` });
+  });
 
-  private resolveExecutable(): string {
-    const envPath = process.env.MOTHPROBE_MCP_PATH;
-    const candidates = [
-      envPath,
-      join(this.root, "data", ".mothprobe", "bin", process.platform === "win32" ? "mothprobe_mcp.exe" : "mothprobe_mcp"),
-      join(this.root, "build", "Debug", process.platform === "win32" ? "mothprobe_mcp.exe" : "mothprobe_mcp"),
-      join(this.root, "build", process.platform === "win32" ? "mothprobe_mcp.exe" : "mothprobe_mcp")
-    ].filter(Boolean) as string[];
-    const found = candidates.find((file) => existsSync(file));
-    if (!found) {
-      throw new Error("Cannot find mothprobe_mcp. Build it first or set MOTHPROBE_MCP_PATH.");
-    }
-    return found;
+  mcpProcess.on('error', (err) => {
+    store.setConnected(false);
+    rejectPending(new McpRequestError(`MCP daemon error: ${err.message}`, -32001, {
+      kind: 'mcp_disconnected',
+      retryable: true
+    }));
+    store.addMessage({ type: 'system', content: `MCP error: ${err.message}` });
+  });
+}
+
+export function restartMcpClient() {
+  if (mcpProcess) {
+    mcpProcess.kill();
+    mcpProcess = null;
   }
+  startMcpClient();
+}
+
+export function getMcpStatus() {
+  return {
+    connected: useStore.getState().isConnected,
+    pid: mcpProcess?.pid || null,
+    executable: currentExePath,
+    pendingRequests: pendingRequests.size
+  };
+}
+
+export function interruptMcpClient() {
+  if (pendingRequests.size === 0) return false;
+  rejectPending(new McpRequestError('Request interrupted by user', -32800, {
+    kind: 'interrupted',
+    retryable: true
+  }));
+  if (mcpProcess) {
+    interrupting = true;
+    mcpProcess.kill();
+    mcpProcess = null;
+  }
+  useStore.getState().setConnected(false);
+  return true;
+}
+
+function rejectPending(error: McpRequestError) {
+  for (const [, pending] of pendingRequests) {
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  }
+  pendingRequests.clear();
+}
+
+export function sendMcpRequest(method: string, params: any = {}): Promise<any> {
+  return new Promise((resolve, reject) => {
+    if (!mcpProcess || !useStore.getState().isConnected) {
+      reject(new McpRequestError("MCP is not connected", -32001, {
+        kind: 'mcp_disconnected',
+        retryable: true
+      }));
+      return;
+    }
+    
+    const id = rpcId++;
+    const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    
+    const timer = setTimeout(() => {
+      pendingRequests.delete(id);
+      reject(new McpRequestError(`MCP request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`, -32002, {
+        kind: 'timeout',
+        retryable: true
+      }));
+    }, REQUEST_TIMEOUT_MS);
+
+    pendingRequests.set(id, { resolve, reject, timer });
+    
+    if (!mcpProcess.stdin) {
+      clearTimeout(timer);
+      pendingRequests.delete(id);
+      reject(new McpRequestError("MCP stdin is not available", -32001, {
+        kind: 'mcp_disconnected',
+        retryable: true
+      }));
+      return;
+    }
+
+    mcpProcess.stdin.write(payload + '\n', (error) => {
+      if (!error) return;
+      const pending = pendingRequests.get(id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingRequests.delete(id);
+      }
+      reject(new McpRequestError(`Failed to write MCP request: ${error.message}`, -32001, {
+        kind: 'mcp_disconnected',
+        retryable: true
+      }));
+    });
+  });
+}
+
+export async function listLlmProviders(): Promise<LlmProviderModel[]> {
+  const result = await sendMcpRequest('llm/list_providers');
+  return Array.isArray(result?.providers) ? result.providers : [];
+}
+
+export async function fetchModelsForProvider(provider: string): Promise<LlmModelFetchResult> {
+  const result = await sendMcpRequest('llm/fetch_models', { provider });
+  return {
+    provider: result?.provider || provider,
+    source: result?.source || 'provider',
+    models: Array.isArray(result?.models) ? result.models : []
+  };
+}
+
+export async function configureProviderApiKey(provider: string, apiKey: string): Promise<void> {
+  await sendMcpRequest('llm/configure_provider', {
+    provider,
+    api_key: apiKey
+  });
+}
+
+export async function callLLM(messages: LlmMessage[], provider: string, model?: string, includeReasoning?: boolean): Promise<LlmResponse> {
+  const result = await sendMcpRequest('llm/chat', {
+    provider,
+    model,
+    messages,
+    stream: false,
+    include_reasoning: includeReasoning
+  });
+  if (!result || typeof result.text !== 'string') {
+    throw new Error('MCP returned an invalid llm/chat response');
+  }
+  return {
+    text: result.text,
+    provider: result.provider || provider,
+    model: result.model || model,
+    finishReason: result.finish_reason,
+    truncated: Boolean(result.truncated),
+    reasoning: result.reasoning || undefined
+  };
 }
