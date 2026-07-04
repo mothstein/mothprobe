@@ -101,11 +101,15 @@ async function runAgentLoop(aiId: string, initialPrompt: string, provider: strin
       
       useStore.getState().addMessage({ type: 'system', content: `> [EXEC] ${indicator}` });
       
-      if (name === "run_command" && args.command && args.command.length > 200) {
+      const cmdVerb = args.command ? args.command.trim().split(/\s+/)[0].toLowerCase() : "";
+      const isFull = useStore.getState().permissionLevel === 'full';
+      const isAllowed = isFull || useStore.getState().permissions.includes(cmdVerb);
+
+      if (name === "run_command" && args.command && (!isAllowed || (!isFull && args.command.length > 200))) {
         const approval = await new Promise<string>((resolve) => {
           useStore.getState().setToolApprovalRequest({
             command: args.command,
-            reason: args.reason || "Executing long command",
+            reason: args.reason || "Executing unpermitted or long shell command",
             resolve
           });
         });
@@ -116,6 +120,8 @@ async function runAgentLoop(aiId: string, initialPrompt: string, provider: strin
         } else if (approval.toLowerCase() !== "yes") {
           toolResults.push(`Tool ${name} rejected. User feedback: ${approval}`);
           continue;
+        } else {
+          args.approved = true;
         }
       }
       
@@ -230,6 +236,14 @@ export async function handleInput(input: string) {
         if (args.length === 0) {
           const perms = store.permissions.join(', ');
           store.addMessage({ type: 'system', content: `### Shell Permissions\n\nAllowed commands: ${perms}\n\nUse \`/permission grant <cmd>\` or \`/permission revoke <cmd>\`.` });
+        } else if (args[0] === 'grant' && args[1] === 'all') {
+          try {
+            await sendMcpRequest('permission/set', { level: 'full' });
+            store.setPermissionLevel('full');
+            store.addMessage({ type: 'system', content: `> ⚠️ **DANGER**: Shell permission level set to **FULL**. All commands are now allowed without interactive approval.` });
+          } catch (e) {
+            store.addMessage({ type: 'system', content: `> Error setting full permission: ${e}` });
+          }
         } else if (args[0] === 'grant' && args[1]) {
           store.grantPermission(args[1].toLowerCase());
           store.addMessage({ type: 'system', content: `> Granted permission for shell command: **${args[1]}**` });
