@@ -73,7 +73,7 @@ async function runAgentLoop(aiId: string, initialPrompt: string, provider: strin
         }
         calls.push(JSON.parse(jsonStr));
       } catch (e) {
-        useStore.getState().addMessage({ type: 'system', content: `> ⚠️  Failed to parse tool call JSON: ${e instanceof Error ? e.message : String(e)}` });
+        useStore.getState().addMessage({ type: 'system', content: `> [WARN] Failed to parse tool call JSON: ${e instanceof Error ? e.message : String(e)}` });
       }
     }
     
@@ -99,7 +99,7 @@ async function runAgentLoop(aiId: string, initialPrompt: string, provider: strin
       else if (name === "run_command") indicator = `Exec [${args.command}]`;
       else if (name === "agents/run" || name.startsWith("Spawn")) indicator = `SpawnAgents [${args.agent || args.name}]`;
       
-      useStore.getState().addMessage({ type: 'system', content: `> 🛠️  ${indicator}` });
+      useStore.getState().addMessage({ type: 'system', content: `> [EXEC] ${indicator}` });
       
       if (name === "run_command" && args.command && args.command.length > 200) {
         const approval = await new Promise<string>((resolve) => {
@@ -128,7 +128,7 @@ async function runAgentLoop(aiId: string, initialPrompt: string, provider: strin
     }
     
     currentPrompt = "Tool results:\n" + toolResults.join("\n\n");
-    useStore.getState().addMessage({ type: 'system', content: `> ⏳ Thinking...` });
+    useStore.getState().addMessage({ type: 'system', content: `> [WAIT] Thinking...` });
     currentAiId = useStore.getState().addMessage({ type: 'ai', content: '', isLoading: true });
   }
 }
