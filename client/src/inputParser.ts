@@ -17,16 +17,18 @@ async function buildLlmMessagesWithTools(prompt: string): Promise<LlmMessage[]> 
     if (res && res.tools) toolsInfo = res.tools;
   } catch (e) { }
   
-  const sysMsg = `You are a helpful agent. You have access to the following MCP tools:
+  const sysMsg = `You are an autonomous pentesting and coding agent. You have access to the following MCP tools:
 ${JSON.stringify(toolsInfo, null, 2)}
 
-To use a tool, you MUST output an XML block exactly like this:
+When the user asks you to perform an action (e.g., list a folder, run a shell command, read a file), you MUST use the appropriate tool.
+To use a tool, output an XML block exactly like this:
 <tool_call>
-{"name": "tool_name", "arguments": {"arg1": "value"}}
+{"name": "run_command", "arguments": {"command": "ls"}}
 </tool_call>
 
-You can output multiple <tool_call> blocks if you want to call multiple tools in parallel.
-Wait for the user to provide the tool results.`;
+- You can output multiple <tool_call> blocks to run tools in parallel.
+- Do NOT simulate or explain what you are going to do before calling the tool. Just call the tool!
+- Wait for the tool results before answering.`;
 
   return [
     { role: 'system', content: sysMsg },
@@ -61,7 +63,18 @@ async function runAgentLoop(aiId: string, initialPrompt: string, provider: strin
     let match;
     const calls = [];
     while ((match = toolRegex.exec(text)) !== null) {
-      try { calls.push(JSON.parse(match[1])); } catch (e) {}
+      try {
+        let jsonStr = match[1].trim();
+        if (jsonStr.startsWith("```json")) {
+          jsonStr = jsonStr.substring(7).trim();
+          if (jsonStr.endsWith("```")) {
+            jsonStr = jsonStr.substring(0, jsonStr.length - 3).trim();
+          }
+        }
+        calls.push(JSON.parse(jsonStr));
+      } catch (e) {
+        useStore.getState().addMessage({ type: 'system', content: `> ⚠️  Failed to parse tool call JSON: ${e instanceof Error ? e.message : String(e)}` });
+      }
     }
     
     const textToDisplay = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();

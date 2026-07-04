@@ -270,7 +270,7 @@ void ChatMemory::AppendTurn(const std::vector<llm::ChatMessage>& request_message
                             const std::string& reasoning) {
   EnsureActiveSession();
   for (const auto& message : request_messages) {
-    if (!IsPersistableRole(message.role) || message.content.empty()) continue;
+    if (!IsPersistableRole(message.role) || message.role == "system" || message.content.empty()) continue;
     if (active_.summary.title == "New chat" && message.role == "user") {
       active_.summary.title = AutoTitle(message.content);
     }
