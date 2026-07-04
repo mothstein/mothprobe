@@ -210,22 +210,7 @@ export async function handleInput(input: string) {
         break;
       }
       case 'resume': {
-        const dataDir = path.resolve(process.cwd(), 'data');
-        const bakPath = path.join(dataDir, 'history.bak.json');
-        if (fs.existsSync(bakPath)) {
-          const histData = fs.readFileSync(bakPath, 'utf8');
-          try {
-            const history = JSON.parse(histData);
-            if (Array.isArray(history)) {
-              useStore.setState({ chatHistory: history });
-              useStore.getState().addMessage({ type: 'system', content: `> Restored previous session.` });
-            }
-          } catch (e) {
-            store.addMessage({ type: 'system', content: `> Failed to restore session.` });
-          }
-        } else {
-          store.addMessage({ type: 'system', content: `> No previous session found.` });
-        }
+        store.setResumePickerOpen(true);
         break;
       }
       case 'permission': {
