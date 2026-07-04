@@ -18,11 +18,12 @@
 #include <memory>
 #include <set>
 #include <sstream>
+#include <system_error>
 #include <utility>
-#include <cstdio>
 
 #include <httplib.h>
 
+#include "core/shell_runner.hpp"
 #include "mothon/protocol/upstream.hpp"
 
 namespace mothprobe::mothon::tools {
@@ -114,6 +115,127 @@ ToolDefinition PassiveTool(std::string name, std::string description, nlohmann::
           false};
 }
 
+ToolCallResult ApprovalRequired(const ToolDefinition& tool) {
+  return ErrorResult(-32020,
+                     "approval required for tool: " + tool.name,
+                     {{"tool", tool.name},
+                      {"riskClass", RiskClassName(tool.risk)},
+                      {"approvalRequired", true}});
+}
+
+ToolCallResult PermissionDenied(const ToolDefinition& tool, core::ToolPermission permission) {
+  return ErrorResult(-32020,
+                     "permission denied for tool: " + tool.name,
+                     {{"tool", tool.name},
+                      {"riskClass", RiskClassName(tool.risk)},
+                      {"permission", core::ToolPermissionName(permission)}});
+}
+
+bool RequiresApproval(const ToolDefinition& tool, PermissionLevel permission,
+                      const nlohmann::json& arguments) {
+  if (permission == PermissionLevel::Full) return false;
+  if (arguments.value("approved", false)) return false;
+  return tool.approval_required || tool.risk != RiskClass::Passive;
+}
+
+const ToolDefinition* FindTool(const std::vector<ToolDefinition>& tools, const std::string& name) {
+  for (const auto& tool : tools) {
+    if (tool.name == name) return &tool;
+  }
+  return nullptr;
+}
+
+std::filesystem::path CanonicalRoot(const std::filesystem::path& root) {
+  std::error_code ec;
+  auto canonical = std::filesystem::weakly_canonical(root, ec);
+  return ec ? std::filesystem::absolute(root).lexically_normal() : canonical;
+}
+
+bool IsInside(const std::filesystem::path& root, const std::filesystem::path& target) {
+  std::error_code ec;
+  const auto rel = std::filesystem::relative(target, root, ec);
+  if (ec) {
+    return false;
+  }
+  if (rel.empty() || rel == ".") {
+    return true;
+  }
+  const auto first = rel.begin();
+  return first == rel.end() || (*first != ".." && !rel.is_absolute());
+}
+
+bool IsInsideAny(const std::vector<std::filesystem::path>& roots,
+                 const std::filesystem::path& target) {
+  for (const auto& root : roots) {
+    if (IsInside(CanonicalRoot(root), target)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::filesystem::path ResolveExistingPath(const core::RuntimeConfig& config,
+                                          const std::vector<std::filesystem::path>& roots,
+                                          const std::string& value) {
+  auto path = std::filesystem::path(value);
+  if (path.is_relative()) path = config.project_root / path;
+  std::error_code ec;
+  path = std::filesystem::weakly_canonical(path, ec);
+  if (ec || !IsInsideAny(roots, path)) {
+    throw std::runtime_error("path is outside permitted roots");
+  }
+  return path;
+}
+
+std::filesystem::path ResolveWritablePath(const core::RuntimeConfig& config,
+                                          const std::vector<std::filesystem::path>& roots,
+                                          const std::string& value) {
+  auto path = std::filesystem::path(value);
+  if (path.is_relative()) path = config.project_root / path;
+  path = path.lexically_normal();
+  std::error_code ec;
+  const auto parent = std::filesystem::weakly_canonical(path.parent_path(), ec);
+  const auto checked_parent = ec ? std::filesystem::absolute(path.parent_path()).lexically_normal()
+                                 : parent;
+  if (!IsInsideAny(roots, checked_parent)) {
+    throw std::runtime_error("path is outside permitted roots");
+  }
+  return checked_parent / path.filename();
+}
+
+class ScopedTempPath {
+ public:
+  explicit ScopedTempPath(std::filesystem::path path) : path_(std::move(path)) {}
+  ~ScopedTempPath() {
+    if (active_) {
+      std::error_code ignored;
+      std::filesystem::remove(path_, ignored);
+    }
+  }
+  const std::filesystem::path& path() const { return path_; }
+  void Release() { active_ = false; }
+
+ private:
+  std::filesystem::path path_;
+  bool active_ = true;
+};
+
+struct AddrInfoDeleter {
+  void operator()(addrinfo* value) const {
+    if (value) freeaddrinfo(value);
+  }
+};
+
+using AddrInfoPtr = std::unique_ptr<addrinfo, AddrInfoDeleter>;
+
+PermissionLevel EffectivePermissionLevel(core::ToolPermission persisted,
+                                         PermissionLevel requested) {
+  if (persisted == core::ToolPermission::Allow) {
+    return PermissionLevel::Full;
+  }
+  return requested;
+}
+
 }  // namespace
 
 std::string RiskClassName(RiskClass risk) {
@@ -149,22 +271,31 @@ ToolRegistry::ToolRegistry(core::RuntimeConfig config) : config_(std::move(confi
                     RiskClass::Passive,
                     false,
                     false});
-  tools_.push_back(PassiveTool(
-      "run_command", "Execute a shell command.",
-      {{"type", "object"},
-       {"required", {"command"}},
-       {"properties", {{"command", {{"type", "string"}, {"description", "Command to execute."}}}}}}));
+  tools_.push_back({"run_command",
+                    "Execute a shell command through the MothProbe permission policy.",
+                    {{"type", "object"},
+                     {"required", {"command"}},
+                     {"properties",
+                      {{"command", {{"type", "string"}, {"description", "Command to execute."}}},
+                       {"approved", {{"type", "boolean"}}}}}},
+                    RiskClass::LowActive,
+                    false,
+                    true});
   tools_.push_back(PassiveTool(
       "read_file", "Read file contents.",
       {{"type", "object"},
        {"required", {"path"}},
        {"properties", {{"path", {{"type", "string"}, {"description", "Path to file."}}}}}}));
-  tools_.push_back(PassiveTool(
-      "write_file", "Write file contents.",
-      {{"type", "object"},
-       {"required", {"path", "content"}},
-       {"properties", {{"path", {{"type", "string"}}},
-                       {"content", {{"type", "string"}}}}}}));
+  tools_.push_back({"write_file",
+                    "Write file contents inside the current workspace.",
+                    {{"type", "object"},
+                     {"required", {"path", "content"}},
+                     {"properties", {{"path", {{"type", "string"}}},
+                                     {"content", {{"type", "string"}}},
+                                     {"approved", {{"type", "boolean"}}}}}},
+                    RiskClass::Intrusive,
+                    false,
+                    true});
   tools_.push_back(PassiveTool(
       "list_dir", "List directory contents.",
       {{"type", "object"},
@@ -174,6 +305,7 @@ ToolRegistry::ToolRegistry(core::RuntimeConfig config) : config_(std::move(confi
 
 nlohmann::json ToolRegistry::List() const {
   nlohmann::json out = nlohmann::json::array();
+  const auto permissions = core::LoadPermissionConfig(config_);
   for (const auto& tool : tools_) {
     nlohmann::json item{{"name", tool.name},
                         {"description", tool.description},
@@ -181,20 +313,37 @@ nlohmann::json ToolRegistry::List() const {
                         {"annotations",
                          {{"riskClass", RiskClassName(tool.risk)},
                           {"scopeRequired", tool.scope_required},
-                          {"approvalRequired", tool.approval_required}}}};
+                          {"approvalRequired", tool.approval_required},
+                          {"permission",
+                           core::ToolPermissionName(permissions.PermissionFor(tool.name))}}}};
     out.push_back(protocol::CppMcpToolShape(item));
   }
   return out;
 }
 
 ToolCallResult ToolRegistry::Call(const std::string& name, const nlohmann::json& arguments,
-                                  const ::mothprobe::mcp::ScopeValidator& scope) const {
+                                  const ::mothprobe::mcp::ScopeValidator& scope,
+                                  PermissionLevel permission) const {
+  const auto* definition = FindTool(tools_, name);
+  if (!definition) {
+    return ErrorResult(-32602, "unknown tool: " + name, {{"tool", name}});
+  }
+  const auto permissions = core::LoadPermissionConfig(config_);
+  const auto persisted_permission = permissions.PermissionFor(name);
+  if (persisted_permission == core::ToolPermission::Deny) {
+    return PermissionDenied(*definition, persisted_permission);
+  }
+  permission = EffectivePermissionLevel(persisted_permission, permission);
+  if (persisted_permission == core::ToolPermission::Ask &&
+      RequiresApproval(*definition, permission, arguments)) {
+    return ApprovalRequired(*definition);
+  }
   if (name == "lookup_dns") return LookupDns(arguments, scope);
   if (name == "detect_headers") return DetectHeaders(arguments, scope);
   if (name == "report_export") return ExportReport(arguments);
-  if (name == "run_command") return RunCommand(arguments, scope);
+  if (name == "run_command") return RunCommand(arguments, permission);
   if (name == "read_file") return ReadFile(arguments, scope);
-  if (name == "write_file") return WriteFile(arguments, scope);
+  if (name == "write_file") return WriteFile(arguments, permission);
   if (name == "list_dir") return ListDir(arguments, scope);
   return ErrorResult(-32602, "unknown tool: " + name, {{"tool", name}});
 }
@@ -221,10 +370,11 @@ ToolCallResult ToolRegistry::LookupDns(const nlohmann::json& arguments,
   if (rc != 0) {
     return ErrorResult(-32000, "DNS resolution failed", {{"target", target}, {"host", host}});
   }
+  AddrInfoPtr results(result);
 
   std::set<std::string> addresses;
   char buffer[INET6_ADDRSTRLEN]{};
-  for (auto* item = result; item != nullptr; item = item->ai_next) {
+  for (auto* item = results.get(); item != nullptr; item = item->ai_next) {
     void* address = nullptr;
     if (item->ai_family == AF_INET) {
       address = &reinterpret_cast<sockaddr_in*>(item->ai_addr)->sin_addr;
@@ -235,7 +385,6 @@ ToolCallResult ToolRegistry::LookupDns(const nlohmann::json& arguments,
       addresses.insert(buffer);
     }
   }
-  freeaddrinfo(result);
 
   nlohmann::json structured{{"target", target}, {"host", host}, {"addresses", addresses}};
   return {true, TextContent("Resolved " + host + " to " + std::to_string(addresses.size()) +
@@ -311,68 +460,108 @@ ToolCallResult ToolRegistry::ExportReport(const nlohmann::json& arguments) const
 }
 
 ToolCallResult ToolRegistry::RunCommand(const nlohmann::json& arguments,
-                                        const ::mothprobe::mcp::ScopeValidator& scope) const {
+                                        PermissionLevel permission) const {
   const auto command = RequiredString(arguments, "command");
   if (command.empty()) return ErrorResult(-32602, "run_command requires arguments.command");
-  
-#ifdef _WIN32
-  std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(command.c_str(), "rt"), _pclose);
-#else
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
-#endif
-  if (!pipe) return ErrorResult(-32000, "failed to start command");
-  
-  std::string output;
-  char buffer[256];
-  while (fgets(buffer, sizeof(buffer), pipe.get()) != nullptr) {
-    output += buffer;
+  int exit_code = -1;
+  const auto shell_level = permission == PermissionLevel::Full
+                               ? core::ShellPermissionLevel::Full
+                               : core::ShellPermissionLevel::Default;
+  auto output = core::RunShellCommand(command, &exit_code, shell_level);
+  if (exit_code < 0 && output == "Rejected by shell policy.") {
+    return ErrorResult(-32021, output, {{"command", command}, {"permission", "default"}});
   }
-  return {true, TextContent("Command output:\n" + output, {{"command", command}, {"output", output}})};
+  return {true, TextContent("Command output:\n" + output,
+                            {{"command", command}, {"output", output}, {"exit_code", exit_code}})};
 }
 
 ToolCallResult ToolRegistry::ReadFile(const nlohmann::json& arguments,
                                       const ::mothprobe::mcp::ScopeValidator& scope) const {
   const auto path = RequiredString(arguments, "path");
   if (path.empty()) return ErrorResult(-32602, "read_file requires arguments.path");
-  
-  std::ifstream in(path, std::ios::binary);
+  std::filesystem::path safe_path;
+  try {
+    const auto permissions = core::LoadPermissionConfig(config_);
+    safe_path = ResolveExistingPath(config_, permissions.readable_paths, path);
+  } catch (const std::exception& error) {
+    return ErrorResult(-32022, error.what(), {{"path", path}});
+  }
+  if (!std::filesystem::is_regular_file(safe_path)) {
+    return ErrorResult(-32000, "path is not a regular file", {{"path", path}});
+  }
+  std::ifstream in(safe_path, std::ios::binary);
   if (!in) return ErrorResult(-32000, "failed to open file");
-  
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  return {true, TextContent(ss.str(), {{"path", path}})};
+
+  constexpr std::size_t kMaxRead = 12000;
+  std::string content;
+  content.resize(kMaxRead);
+  in.read(content.data(), static_cast<std::streamsize>(content.size()));
+  content.resize(static_cast<std::size_t>(in.gcount()));
+  const bool truncated = !in.eof();
+  if (truncated) content += "\n[truncated by MothProbe]";
+  return {true, TextContent(content, {{"path", safe_path.string()}, {"truncated", truncated}})};
 }
 
 ToolCallResult ToolRegistry::WriteFile(const nlohmann::json& arguments,
-                                       const ::mothprobe::mcp::ScopeValidator& scope) const {
+                                       PermissionLevel permission) const {
   const auto path = RequiredString(arguments, "path");
-  const auto content = RequiredString(arguments, "content");
-  if (path.empty() || content.empty()) return ErrorResult(-32602, "write_file requires path and content");
-  
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (path.empty() || !arguments.contains("content") || !arguments["content"].is_string()) {
+    return ErrorResult(-32602, "write_file requires path and content");
+  }
+  const auto content = arguments["content"].get<std::string>();
+  std::filesystem::path safe_path;
+  try {
+    const auto permissions = core::LoadPermissionConfig(config_);
+    safe_path = ResolveWritablePath(config_, permissions.writable_paths, path);
+  } catch (const std::exception& error) {
+    return ErrorResult(-32022, error.what(), {{"path", path}});
+  }
+  std::filesystem::create_directories(safe_path.parent_path());
+  ScopedTempPath temp(safe_path.string() + ".mothprobe.tmp");
+  std::ofstream out(temp.path(), std::ios::binary | std::ios::trunc);
   if (!out) return ErrorResult(-32000, "failed to open file for writing");
-  
+  if (content.size() > 1024 * 1024) {
+    return ErrorResult(-32602, "write_file content is too large");
+  }
   out << content;
-  return {true, TextContent("File written successfully.", {{"path", path}})};
+  out.close();
+  std::error_code ec;
+  std::filesystem::rename(temp.path(), safe_path, ec);
+  if (ec) {
+    return ErrorResult(-32000, "failed to replace file", {{"path", safe_path.string()}});
+  }
+  temp.Release();
+  return {true, TextContent("File written successfully.", {{"path", safe_path.string()}})};
 }
 
 ToolCallResult ToolRegistry::ListDir(const nlohmann::json& arguments,
                                      const ::mothprobe::mcp::ScopeValidator& scope) const {
   const auto path = RequiredString(arguments, "path");
   if (path.empty()) return ErrorResult(-32602, "list_dir requires arguments.path");
-  
-  std::filesystem::path dir(path);
+  std::filesystem::path dir;
+  try {
+    const auto permissions = core::LoadPermissionConfig(config_);
+    dir = ResolveExistingPath(config_, permissions.readable_paths, path);
+  } catch (const std::exception& error) {
+    return ErrorResult(-32022, error.what(), {{"path", path}});
+  }
   if (!std::filesystem::exists(dir) || !std::filesystem::is_directory(dir)) {
     return ErrorResult(-32000, "path is not a directory or does not exist");
   }
   
   std::string result;
+  nlohmann::json entries = nlohmann::json::array();
+  std::size_t count = 0;
   for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    if (count++ >= 200) break;
     result += entry.path().filename().string();
     if (entry.is_directory()) result += "/";
     result += "\n";
+    entries.push_back({{"name", entry.path().filename().string()},
+                       {"directory", entry.is_directory()}});
   }
-  return {true, TextContent("Directory contents:\n" + result, {{"path", path}})};
+  return {true, TextContent("Directory contents:\n" + result,
+                            {{"path", dir.string()}, {"entries", entries}})};
 }
 
 }  // namespace mothprobe::mothon::tools

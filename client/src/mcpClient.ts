@@ -53,6 +53,28 @@ export type LlmResponse = {
   finishReason?: string;
   truncated: boolean;
   reasoning?: string;
+  reasoningMode?: string;
+  session?: any;
+};
+
+export type ReasoningMode = 'default' | 'fast' | 'advanced';
+
+export type ChatSessionSummary = {
+  session_id: string;
+  title: string;
+  updated_at: string;
+  message_count: number;
+};
+
+export type ChatSessionPayload = {
+  summary: ChatSessionSummary;
+  messages: any[];
+};
+
+export type PromptPayload = {
+  name: string;
+  description: string;
+  messages: LlmMessage[];
 };
 
 export type LlmProviderModel = {
@@ -190,18 +212,33 @@ export function getMcpStatus() {
 }
 
 export function interruptMcpClient() {
-  if (pendingRequests.size === 0) return false;
-  rejectPending(new McpRequestError('Request interrupted by user', -32800, {
-    kind: 'interrupted',
-    retryable: true
-  }));
+  interrupting = true;
+  for (const [id, req] of pendingRequests.entries()) {
+    clearTimeout(req.timer);
+    req.reject(new McpRequestError(`Request ${id} interrupted`, -32800, { kind: 'interrupted' }));
+  }
+  pendingRequests.clear();
+  if (mcpProcess?.stdin) {
+    mcpProcess.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'cancel' }) + '\n');
+  }
+}
+
+export function stopMcpClient() {
   if (mcpProcess) {
-    interrupting = true;
     mcpProcess.kill();
     mcpProcess = null;
   }
-  useStore.getState().setConnected(false);
-  return true;
+}
+
+export async function ensureMcpReady() {
+  if (!getMcpStatus().connected) {
+    startMcpClient();
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+export async function mcpClientAction(action: string, args: any = {}) {
+  return await sendMcpRequest(`cli/${action}`, args);
 }
 
 function rejectPending(error: McpRequestError) {
@@ -258,6 +295,27 @@ export function sendMcpRequest(method: string, params: any = {}): Promise<any> {
       }));
     });
   });
+}
+
+export async function getPrompt(name: string): Promise<PromptPayload> {
+  return await sendMcpRequest('prompts/get', { name }) as PromptPayload;
+}
+
+export async function setReasoningMode(mode: string): Promise<any> {
+  return await sendMcpRequest('chat/reasoning', { mode });
+}
+
+export async function loadChatSession(sessionId: string): Promise<any> {
+  return await sendMcpRequest('chat/load', { session_id: sessionId });
+}
+
+export async function listChatSessions(): Promise<ChatSessionSummary[]> {
+  const res = await sendMcpRequest('chat/sessions');
+  return res.sessions || [];
+}
+
+export async function clearChatSession(): Promise<any> {
+  return await sendMcpRequest('chat/clear');
 }
 
 export async function listLlmProviders(): Promise<LlmProviderModel[]> {

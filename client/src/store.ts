@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { fallbackTheme, listThemes, loadTheme, normalizeThemeName, type Theme } from './themeManager.js';
 
+export const DEFAULT_SHELL_PERMISSIONS = ["dir", "ls", "echo", "whoami", "hostname", "ver"] as const;
+
 export type ChatMessage = {
   id: string;
   type: 'user' | 'ai' | 'system' | 'mcp' | 'shell';
@@ -24,29 +26,54 @@ export type LlmConfig = {
   model?: string;
 };
 
-export type Session = {
-  id: string;
-  updatedAt: number;
-  history: ChatMessage[];
+export type ReasoningMode = 'default' | 'advanced' | 'fast';
+export type PermissionLevel = 'default' | 'full';
+
+export type AgentSummary = {
+  name: string;
+  title?: string;
+  description?: string;
+};
+
+export type ToolApprovalRequest = {
+  command: string;
+  reason: string;
+  resolve: (response: string) => void;
 };
 
 interface AppState {
   chatHistory: ChatMessage[];
   mode: AppMode;
   isConnected: boolean;
+  workspacePath: string;
   llmConfig: LlmConfig | null;
   modelPickerOpen: boolean;
+  resumePickerOpen: boolean;
+  reasoningPickerOpen: boolean;
+  activeSessionId: string | null;
+  reasoningMode: ReasoningMode;
+  agentsList: AgentSummary[];
+  activeAgent: string | null;
+  permissionLevel: PermissionLevel;
   themeName: string;
   theme: Theme;
   availableThemes: string[];
   permissions: string[];
-  reasoningEnabled: boolean;
-  addMessage: (msg: Omit<ChatMessage, 'id'>) => void;
+  toolApprovalRequest: ToolApprovalRequest | null;
+  addMessage: (msg: Omit<ChatMessage, 'id'>) => string;
   setChatHistory: (history: ChatMessage[]) => void;
+  setWorkspacePath: (workspacePath: string) => void;
+  setActiveSessionId: (sessionId: string | null) => void;
+  setReasoningMode: (mode: ReasoningMode) => void;
+  setAgentsList: (agentsList: AgentSummary[]) => void;
+  setActiveAgent: (activeAgent: string | null) => void;
+  setPermissionLevel: (permissionLevel: PermissionLevel) => void;
+  resetDefaultPermissions: () => void;
   grantPermission: (cmd: string) => void;
   revokePermission: (cmd: string) => void;
-  toggleReasoning: () => void;
+  updateMessage: (id: string, content: string, reasoning?: string) => void;
   updateLastMessage: (content: string, reasoning?: string) => void;
+  startTypingMessage: (id: string, content: string, reasoning?: string) => void;
   startTypingLastMessage: (content: string, reasoning?: string) => void;
   typeNextChunk: (id: string, chunkSize: number) => void;
   toggleLatestThought: () => void;
@@ -56,35 +83,74 @@ interface AppState {
   setConnected: (connected: boolean) => void;
   setLlmConfig: (config: LlmConfig) => void;
   setModelPickerOpen: (open: boolean) => void;
+  setResumePickerOpen: (open: boolean) => void;
+  setReasoningPickerOpen: (open: boolean) => void;
   setTheme: (themeName: string) => boolean;
   refreshThemes: () => void;
+  setToolApprovalRequest: (req: ToolApprovalRequest | null) => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
   chatHistory: [],
   mode: 'chat',
   isConnected: false,
+  workspacePath: process.cwd(),
   llmConfig: null,
   modelPickerOpen: false,
+  resumePickerOpen: false,
+  reasoningPickerOpen: false,
+  activeSessionId: null,
+  reasoningMode: 'default',
+  agentsList: [],
+  activeAgent: null,
+  permissionLevel: 'default',
   themeName: 'default',
   theme: fallbackTheme,
   availableThemes: listThemes(),
-  permissions: ["dir", "ls", "echo", "whoami", "hostname", "ver"],
-  reasoningEnabled: true,
+  permissions: [...DEFAULT_SHELL_PERMISSIONS],
+  toolApprovalRequest: null,
   setChatHistory: (history) => set({ chatHistory: history }),
-  grantPermission: (cmd) => set((state) => ({ 
-    permissions: state.permissions.includes(cmd) ? state.permissions : [...state.permissions, cmd] 
+  setWorkspacePath: (workspacePath) => set({ workspacePath }),
+  setActiveSessionId: (activeSessionId) => set({ activeSessionId }),
+  setReasoningMode: (reasoningMode) => set({ reasoningMode }),
+  setAgentsList: (agentsList) => set({ agentsList }),
+  setActiveAgent: (activeAgent) => set({ activeAgent }),
+  setPermissionLevel: (permissionLevel) => set({ permissionLevel }),
+  resetDefaultPermissions: () => set({ permissions: [...DEFAULT_SHELL_PERMISSIONS], permissionLevel: 'default' }),
+  grantPermission: (cmd) => set((state) => ({
+    permissions: state.permissions.includes(cmd.toLowerCase()) ? state.permissions : [...state.permissions, cmd.toLowerCase()]
   })),
   revokePermission: (cmd) => set((state) => ({
-    permissions: state.permissions.filter((p) => p !== cmd)
+    permissions: state.permissions.filter((p) => p !== cmd.toLowerCase())
   })),
-  toggleReasoning: () => set((state) => ({ reasoningEnabled: !state.reasoningEnabled })),
-  addMessage: (msg) => set((state) => ({ 
-    chatHistory: [...state.chatHistory, {
-      ...msg,
-      id: Date.now().toString() + Math.random().toString(),
-      thinkingStartedAt: msg.isLoading ? Date.now() : msg.thinkingStartedAt
-    }] 
+  addMessage: (msg) => {
+    const id = Date.now().toString() + Math.random().toString();
+    set((state) => ({
+      chatHistory: [...state.chatHistory, {
+        ...msg,
+        id,
+        thinkingStartedAt: msg.isLoading ? Date.now() : msg.thinkingStartedAt
+      }]
+    }));
+    return id;
+  },
+  updateMessage: (id, content, reasoning) => set((state) => ({
+    chatHistory: state.chatHistory.map((message) => {
+      if (message.id !== id) return message;
+      const endedAt = message.isLoading ? Date.now() : message.thinkingEndedAt;
+      return {
+        ...message,
+        content,
+        reasoning: reasoning !== undefined ? reasoning : message.reasoning,
+        pendingContent: undefined,
+        isTyping: false,
+        isLoading: false,
+        thinkingEndedAt: endedAt,
+        thoughtDurationMs: message.thinkingStartedAt && endedAt
+          ? endedAt - message.thinkingStartedAt
+          : message.thoughtDurationMs
+      };
+    })
   })),
   updateLastMessage: (content, reasoning) => set((state) => {
     const newHistory = [...state.chatHistory];
@@ -113,10 +179,10 @@ export const useStore = create<AppState>((set, get) => ({
       const endedAt = previous.isLoading ? Date.now() : previous.thinkingEndedAt;
       newHistory[newHistory.length - 1] = {
         ...previous,
-        content: '',
+        content: content,
         reasoning: reasoning !== undefined ? reasoning : newHistory[newHistory.length - 1].reasoning,
-        pendingContent: content,
-        isTyping: true,
+        pendingContent: undefined,
+        isTyping: false,
         isLoading: false,
         thinkingEndedAt: endedAt,
         thoughtDurationMs: previous.thinkingStartedAt && endedAt
@@ -126,6 +192,24 @@ export const useStore = create<AppState>((set, get) => ({
     }
     return { chatHistory: newHistory };
   }),
+  startTypingMessage: (id, content, reasoning) => set((state) => ({
+    chatHistory: state.chatHistory.map((message) => {
+      if (message.id !== id) return message;
+      const endedAt = message.isLoading ? Date.now() : message.thinkingEndedAt;
+      return {
+        ...message,
+        content: content,
+        reasoning: reasoning !== undefined ? reasoning : message.reasoning,
+        pendingContent: undefined,
+        isTyping: false,
+        isLoading: false,
+        thinkingEndedAt: endedAt,
+        thoughtDurationMs: message.thinkingStartedAt && endedAt
+          ? endedAt - message.thinkingStartedAt
+          : message.thoughtDurationMs
+      };
+    })
+  })),
   typeNextChunk: (id, chunkSize) => set((state) => ({
     chatHistory: state.chatHistory.map((message) => {
       if (message.id !== id || !message.isTyping || !message.pendingContent) return message;
@@ -176,6 +260,8 @@ export const useStore = create<AppState>((set, get) => ({
   setConnected: (isConnected) => set({ isConnected }),
   setLlmConfig: (llmConfig) => set({ llmConfig }),
   setModelPickerOpen: (modelPickerOpen) => set({ modelPickerOpen }),
+  setResumePickerOpen: (resumePickerOpen) => set({ resumePickerOpen }),
+  setReasoningPickerOpen: (reasoningPickerOpen) => set({ reasoningPickerOpen }),
   setTheme: (themeName) => {
     const normalized = normalizeThemeName(themeName);
     const available = listThemes();
@@ -185,4 +271,5 @@ export const useStore = create<AppState>((set, get) => ({
     return true;
   },
   refreshThemes: () => set({ availableThemes: listThemes() }),
+  setToolApprovalRequest: (toolApprovalRequest) => set({ toolApprovalRequest }),
 }));

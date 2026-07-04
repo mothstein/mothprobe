@@ -17,6 +17,11 @@ enum class RiskClass {
   Intrusive,
 };
 
+enum class PermissionLevel {
+  Default,
+  Full,
+};
+
 struct ToolDefinition {
   std::string name;
   std::string description;
@@ -40,7 +45,8 @@ class ToolRegistry {
 
   nlohmann::json List() const;
   ToolCallResult Call(const std::string& name, const nlohmann::json& arguments,
-                      const ::mothprobe::mcp::ScopeValidator& scope) const;
+                      const ::mothprobe::mcp::ScopeValidator& scope,
+                      PermissionLevel permission = PermissionLevel::Default) const;
 
  private:
   ToolCallResult LookupDns(const nlohmann::json& arguments,
@@ -50,11 +56,11 @@ class ToolRegistry {
   ToolCallResult ExportReport(const nlohmann::json& arguments) const;
 
   ToolCallResult RunCommand(const nlohmann::json& arguments,
-                            const ::mothprobe::mcp::ScopeValidator& scope) const;
+                            PermissionLevel permission) const;
   ToolCallResult ReadFile(const nlohmann::json& arguments,
                           const ::mothprobe::mcp::ScopeValidator& scope) const;
   ToolCallResult WriteFile(const nlohmann::json& arguments,
-                           const ::mothprobe::mcp::ScopeValidator& scope) const;
+                           PermissionLevel permission) const;
   ToolCallResult ListDir(const nlohmann::json& arguments,
                          const ::mothprobe::mcp::ScopeValidator& scope) const;
 

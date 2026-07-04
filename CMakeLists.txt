@@ -13,6 +13,7 @@ set(SODIUM_DISABLE_TESTS ON CACHE BOOL "Disable libsodium vendor tests" FORCE)
 set(HTTPLIB_TEST OFF CACHE BOOL "Disable cpp-httplib tests" FORCE)
 find_package(OpenSSL QUIET)
 find_package(Threads REQUIRED)
+option(MOTHPROBE_ENABLE_ASAN "Enable AddressSanitizer for development builds" OFF)
 
 # Add subdirectories
 add_subdirectory(third_party/fmt)
@@ -60,8 +61,10 @@ set(MOTHPROBE_CORE_SOURCES
 
 set(MOTHPROBE_MCP_SOURCES
     src/mcp/main_mcp.cpp
+    src/mcp/agent_registry.cpp
     src/mcp/chat_memory.cpp
     src/mcp/json_rpc.cpp
+    src/mcp/mcp_client_registry.cpp
     src/mothon/protocol/upstream.cpp
     src/mothon/tools/tool_registry.cpp
     src/mcp/llm/claude_adapter.cpp
@@ -88,6 +91,14 @@ elseif(WIN32)
 endif()
 if(WIN32)
     target_link_libraries(mothprobe_mcp PRIVATE ws2_32)
+endif()
+if(MOTHPROBE_ENABLE_ASAN)
+    if(MSVC)
+        target_compile_options(mothprobe_mcp PRIVATE /fsanitize=address)
+    else()
+        target_compile_options(mothprobe_mcp PRIVATE -fsanitize=address -fno-omit-frame-pointer)
+        target_link_options(mothprobe_mcp PRIVATE -fsanitize=address)
+    endif()
 endif()
 add_custom_command(TARGET mothprobe_mcp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/.mothprobe/bin

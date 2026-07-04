@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, useWindowSize } from "ink";
 import TextInput from "ink-text-input";
 import { useStore } from "../store.js";
 import { handleInput } from "../inputParser.js";
@@ -20,8 +20,9 @@ const commands: Suggestion[] = [
   { value: "/model", label: "/model", description: "Open provider and model picker" },
   { value: "/theme", label: "/theme <name>", description: "Switch or list UI themes" },
   { value: "/permission", label: "/permission", description: "Manage shell command permissions" },
-  { value: "/resume", label: "/resume", description: "Restore previous chat session" },
-  { value: "/reasoning", label: "/reasoning", description: "Toggle reasoning output" },
+  { value: "/resume", label: "/resume", description: "Resume MCP chat session" },
+  { value: "/reasoning", label: "/reasoning", description: "Set reasoning mode" },
+  { value: "/agents", label: "/agents", description: "List or select workspace agents" },
   { value: "/skills", label: "/skills", description: "List available skills and agents" },
   { value: "/clear", label: "/clear", description: "Clear the conversation history" },
   { value: "/exit", label: "/exit", description: "Exit the application" }
@@ -37,8 +38,7 @@ function commandSuggestions(query: string): Suggestion[] {
   return commands.filter((item) => item.value.startsWith(prefix));
 }
 
-function fileSuggestions(query: string): Suggestion[] {
-  const root = process.cwd();
+function fileSuggestions(query: string, root: string): Suggestion[] {
   //Get the last word if they are typing multiple files inline
   const match = query.match(/(?:^|\s)@\[?([^\s\]]*)$/);
   let fragment = match ? match[1] : query;
@@ -79,11 +79,19 @@ function fileSuggestions(query: string): Suggestion[] {
 export function InputBar() {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [approvalIndex, setApprovalIndex] = useState(0);
+  const { columns } = useWindowSize();
   const isConnected = useStore((state) => state.isConnected);
   const mode = useStore((state) => state.mode);
   const llmConfig = useStore((state) => state.llmConfig);
+  const reasoningMode = useStore((state) => state.reasoningMode);
+  const activeSessionId = useStore((state) => state.activeSessionId);
+  const workspacePath = useStore((state) => state.workspacePath);
+  const permissionLevel = useStore((state) => state.permissionLevel);
+  const activeAgent = useStore((state) => state.activeAgent);
   const theme = useStore((state) => state.theme);
   const availableThemes = useStore((state) => state.availableThemes);
+  const toolApprovalRequest = useStore((state) => state.toolApprovalRequest);
   const setMode = useStore((state) => state.setMode);
   const suggestions = useMemo(() => {
     if (query.startsWith("/theme ")) {
@@ -93,11 +101,22 @@ export function InputBar() {
         .map((name) => ({ value: `/theme ${name}`, label: name, description: "theme" }));
     }
     if (query.startsWith("/") || mode === "command") return commandSuggestions(query);
-    if (query.match(/(?:^|\s)@/) || mode === "file") return fileSuggestions(query);
+    if (query.match(/(?:^|\s)@/) || mode === "file") return fileSuggestions(query, workspacePath);
     return [];
-  }, [availableThemes, mode, query]);
+  }, [availableThemes, mode, query, workspacePath]);
 
   useInput((input, key) => {
+    if (toolApprovalRequest) {
+      if (key.upArrow || key.leftArrow) setApprovalIndex(c => Math.max(0, c - 1));
+      if (key.downArrow || key.rightArrow) setApprovalIndex(c => Math.min(2, c + 1));
+      if (key.return && approvalIndex !== 2) {
+         setApprovalIndex(0);
+         useStore.getState().setToolApprovalRequest(null);
+         toolApprovalRequest.resolve(approvalIndex === 0 ? "Yes" : "No");
+      }
+      return;
+    }
+
     if (key.tab && suggestions.length > 0) {
       const match = query.match(/(?:^|\s)(@\[?[^\s\]]*)$/);
       if (match) {
@@ -153,8 +172,59 @@ export function InputBar() {
   };
 
   const modeColor = mode === "command" ? theme.accent : mode === "shell" ? theme.warning : mode === "file" ? theme.user : theme.accent;
+  if (toolApprovalRequest) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Box borderStyle="round" borderColor={theme.warning} paddingX={1} flexDirection="column">
+          <Text color={theme.warning} bold>Agent wants to run a long command:</Text>
+          <Text>{toolApprovalRequest.command.length > 150 ? toolApprovalRequest.command.slice(0, 147) + "..." : toolApprovalRequest.command}</Text>
+          <Text color={theme.muted}>Reason: {toolApprovalRequest.reason}</Text>
+          <Box marginTop={1} flexDirection="row">
+            <Box marginRight={2}>
+              <Text color={approvalIndex === 0 ? theme.accent : theme.text}>
+                {approvalIndex === 0 ? "> " : "  "}Yes
+              </Text>
+            </Box>
+            <Box marginRight={2}>
+              <Text color={approvalIndex === 1 ? theme.accent : theme.text}>
+                {approvalIndex === 1 ? "> " : "  "}No
+              </Text>
+            </Box>
+            <Box>
+              <Text color={approvalIndex === 2 ? theme.accent : theme.text}>
+                {approvalIndex === 2 ? "> " : "  "}Write response
+              </Text>
+            </Box>
+          </Box>
+        </Box>
+        {approvalIndex === 2 && (
+          <Box flexDirection="row" marginTop={1}>
+            <Text color={theme.accent}>Reply: </Text>
+            <TextInput
+              value={query}
+              onChange={setQuery}
+              onSubmit={(val) => {
+                 if (!val.trim()) return;
+                 setQuery("");
+                 setApprovalIndex(0);
+                 useStore.getState().setToolApprovalRequest(null);
+                 toolApprovalRequest.resolve(val);
+              }}
+            />
+          </Box>
+        )}
+      </Box>
+    );
+  }
+
+  let promptColor = theme.accent;
   const prompt = "> "
   const provider = llmConfig?.provider ? `${llmConfig.provider}${llmConfig.model ? ` ${llmConfig.model}` : ""}` : "AI disabled";
+  const session = activeSessionId ? activeSessionId.slice(0, 8) : "no-session";
+  const width = Math.max(44, Math.min(100, columns - 4));
+  const workspace = basename(workspacePath);
+  const agent = activeAgent ? activeAgent.replace(/^agent_/, "") : "no-agent";
+  const providerDisplay = provider.length > 32 ? `${provider.slice(0, 29)}...` : provider;
 
   const visibleCount = 8;
   let startIndex = selectedIndex - Math.floor(visibleCount / 2);
@@ -164,7 +234,7 @@ export function InputBar() {
 
   return (
     <Box flexDirection="column" alignItems="center" marginTop={1}>
-      <Box width={78} borderStyle="single" borderColor={theme.border} paddingX={1}>
+      <Box width={width} borderStyle="single" borderColor={theme.border} paddingX={1}>
         <Box marginRight={1}>
           <Text color={modeColor}>{prompt}</Text>
         </Box>
@@ -175,21 +245,21 @@ export function InputBar() {
           }} onSubmit={handleSubmit} placeholder="Start Typing to send Message, Type @ to attach file" />
         </Box>
       </Box>
-      <Box width={78} justifyContent="space-between">
+      <Box width={width} justifyContent="space-between">
         <Text color={theme.muted}>enter send</Text>
         <Text color={isConnected ? theme.muted : theme.error}>
-          {isConnected ? "Connected" : "Disconnected"} | {provider}
+          {isConnected ? "Connected" : "Disconnected"} | {workspace} | {providerDisplay} | {permissionLevel} | {agent} | {reasoningMode} | {session}
         </Text>
       </Box>
       {suggestions.length > 0 && (
-        <Box width={78} flexDirection="column" borderStyle="single" borderColor={theme.border} paddingX={1}>
+        <Box width={width} flexDirection="column" borderStyle="single" borderColor={theme.border} paddingX={1}>
           {visibleSuggestions.map((item, index) => {
             const actualIndex = startIndex + index;
             const isSelected = actualIndex === selectedIndex;
             let scrollChar = " ";
             if (suggestions.length > visibleCount) {
               const thumbPos = Math.floor((selectedIndex / (suggestions.length - 1)) * (visibleCount - 1));
-              scrollChar = index === thumbPos ? "█" : "│";
+              scrollChar = index === thumbPos ? "#" : "|";
             }
             return (
               <Box key={item.value}>

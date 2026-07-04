@@ -8,7 +8,8 @@ class GeminiAdapter final : public IProvider {
  public:
   explicit GeminiAdapter(core::LlmProviderConfig config);
   std::string Name() const override;
-  ChatResult Chat(const std::vector<ChatMessage>& messages) override;
+  ChatResult Chat(const std::vector<ChatMessage>& messages,
+                  const ReasoningConfig& reasoning = {}) override;
 
  private:
   core::LlmProviderConfig config_;

@@ -14,7 +14,9 @@ std::string OllamaAdapter::Name() const {
   return "ollama";
 }
 
-ChatResult OllamaAdapter::Chat(const std::vector<ChatMessage>& messages) {
+ChatResult OllamaAdapter::Chat(const std::vector<ChatMessage>& messages,
+                               const ReasoningConfig& reasoning_config) {
+  (void)reasoning_config;
   nlohmann::json body{{"model", config_.model_name},
                       {"stream", false},
                       {"messages", nlohmann::json::array()}};

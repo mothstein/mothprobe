@@ -14,6 +14,10 @@ struct ChatMessage {
   std::string content;
 };
 
+struct ReasoningConfig {
+  std::string mode = "default";
+};
+
 struct ChatResult {
   bool ok = false;
   std::string text;
@@ -40,7 +44,8 @@ class IProvider {
  public:
   virtual ~IProvider() = default;
   virtual std::string Name() const = 0;
-  virtual ChatResult Chat(const std::vector<ChatMessage>& messages) = 0;
+  virtual ChatResult Chat(const std::vector<ChatMessage>& messages,
+                          const ReasoningConfig& reasoning = {}) = 0;
 };
 
 using ProviderMap = std::map<std::string, core::LlmProviderConfig>;

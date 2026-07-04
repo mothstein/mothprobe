@@ -14,7 +14,8 @@ std::string ClaudeAdapter::Name() const {
   return "claude";
 }
 
-ChatResult ClaudeAdapter::Chat(const std::vector<ChatMessage>& messages) {
+ChatResult ClaudeAdapter::Chat(const std::vector<ChatMessage>& messages,
+                               const ReasoningConfig& reasoning_config) {
   if (config_.api_key.empty()) {
     return {false, "", "Claude API key is not configured.", "auth_error", "", 0, false, false};
   }
@@ -36,6 +37,9 @@ ChatResult ClaudeAdapter::Chat(const std::vector<ChatMessage>& messages) {
                                 {"content", msg.content}});
   }
   if (!system.empty()) body["system"] = system;
+  if (reasoning_config.mode == "advanced") {
+    body["thinking"] = {{"type", "enabled"}, {"budget_tokens", 8000}};
+  }
 
   Headers headers{{"x-api-key", config_.api_key},
                   {"anthropic-version", "2023-06-01"}};

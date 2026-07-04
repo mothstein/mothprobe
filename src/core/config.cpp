@@ -1,10 +1,14 @@
 #include "core/config.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 
 #include <toml++/toml.hpp>
 
@@ -37,6 +41,38 @@ bool IsSection(const std::string& line) {
 
 std::string ProviderSection(const std::string& provider) {
   return "[llm." + provider + "]";
+}
+
+void WriteIfMissing(const fs::path& path, const std::string& content) {
+  if (fs::exists(path)) return;
+  fs::create_directories(path.parent_path());
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    throw std::runtime_error("cannot create " + path.string());
+  }
+  out << content;
+}
+
+std::string DefaultPentestAgent() {
+  return R"(# MothProbe Pentest Agent
+
+You are MothProbe, an AI Security Penetration Testing Assistant.
+Work only on assets the user owns or has explicit permission to test.
+Prefer passive reconnaissance first, explain risk before intrusive actions, and use scoped tools.
+Before shell or file changes, follow the active MothProbe permission policy.
+Keep auditability high: summarize commands, files read, files changed, and assumptions.
+)";
+}
+
+std::string DefaultMothprobeSkill() {
+  return R"(# MothProbe Cyber Skills
+
+- Build a clear testing scope before any active scan.
+- Use passive OSINT, DNS lookup, HTTP header checks, and code review before intrusive testing.
+- Never exfiltrate secrets; redact API keys, tokens, cookies, passwords, and private keys.
+- For reports, include finding, impact, evidence, reproduction steps, and remediation.
+- If a requested action is unsafe or out of scope, ask for scope clarification.
+)";
 }
 
 LlmProviderConfig DefaultProvider(const std::string& provider) {
@@ -167,6 +203,207 @@ LlmProviderConfig DefaultProvider(const std::string& provider) {
   return {provider, "", "", "/chat/completions", "/models", "", {}, 4096, true, true};
 }
 
+std::string TimestampIso() {
+  const auto now = std::chrono::system_clock::now();
+  const auto time = std::chrono::system_clock::to_time_t(now);
+  std::tm tm{};
+#ifdef _WIN32
+  gmtime_s(&tm, &time);
+#else
+  gmtime_r(&time, &tm);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
+  return out.str();
+}
+
+nlohmann::json PathArrayJson(const std::vector<fs::path>& paths) {
+  nlohmann::json out = nlohmann::json::array();
+  for (const auto& path : paths) {
+    out.push_back(path.string());
+  }
+  return out;
+}
+
+fs::path RuntimePath(const RuntimeConfig& config, const std::string& value) {
+  fs::path path(value);
+  if (path.is_relative()) {
+    path = config.project_root / path;
+  }
+  return fs::absolute(path).lexically_normal();
+}
+
+std::vector<fs::path> PathArrayFromJson(const RuntimeConfig& config, const nlohmann::json& value,
+                                        std::vector<fs::path> fallback) {
+  if (!value.is_array()) {
+    return fallback;
+  }
+  std::vector<fs::path> out;
+  for (const auto& item : value) {
+    if (item.is_string()) {
+      out.push_back(RuntimePath(config, item.get<std::string>()));
+    }
+  }
+  return out.empty() ? std::move(fallback) : std::move(out);
+}
+
+nlohmann::json LoadJsonFile(const fs::path& path, nlohmann::json fallback) {
+  if (!fs::exists(path)) {
+    return fallback;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return fallback;
+  }
+  auto parsed = nlohmann::json::parse(in, nullptr, false);
+  return parsed.is_discarded() ? fallback : parsed;
+}
+
+class ScopedTempFile {
+ public:
+  explicit ScopedTempFile(fs::path path) : path_(std::move(path)) {}
+  ~ScopedTempFile() {
+    if (active_) {
+      std::error_code ignored;
+      fs::remove(path_, ignored);
+    }
+  }
+  const fs::path& path() const { return path_; }
+  void Release() { active_ = false; }
+
+ private:
+  fs::path path_;
+  bool active_ = true;
+};
+
+void SaveJsonFileAtomic(const fs::path& path, const nlohmann::json& value) {
+  fs::create_directories(path.parent_path());
+  ScopedTempFile temp(path.string() + ".tmp");
+  {
+    std::ofstream out(temp.path(), std::ios::binary | std::ios::trunc);
+    if (!out) {
+      throw std::runtime_error("cannot write temporary file: " + temp.path().string());
+    }
+    out << value.dump(2) << '\n';
+  }
+  std::error_code ec;
+  fs::rename(temp.path(), path, ec);
+  if (ec) {
+    fs::remove(path, ec);
+    ec.clear();
+    fs::rename(temp.path(), path, ec);
+  }
+  if (ec) {
+    throw std::runtime_error("cannot replace file: " + path.string());
+  }
+  temp.Release();
+}
+
+std::map<std::string, ToolPermission> DefaultToolPermissions() {
+  return {{"lookup_dns", ToolPermission::Allow},
+          {"detect_headers", ToolPermission::Allow},
+          {"report_export", ToolPermission::Allow},
+          {"read_file", ToolPermission::Allow},
+          {"list_dir", ToolPermission::Allow},
+          {"write_file", ToolPermission::Ask},
+          {"run_command", ToolPermission::Ask}};
+}
+
+PermissionConfig DefaultPermissionConfig(const RuntimeConfig& config) {
+  return {DefaultToolPermissions(),
+          {config.project_root, config.runtime_root},
+          {config.project_root, config.runtime_root}};
+}
+
+WorkspaceConfig DefaultWorkspaceConfig(const RuntimeConfig& config) {
+  return {config.project_root,
+          config.runtime_root,
+          {config.project_root, config.runtime_root},
+          {config.project_root, config.runtime_root}};
+}
+
+void WriteTextFileIfMissing(const fs::path& path, const std::string& content) {
+  if (fs::exists(path)) {
+    return;
+  }
+  fs::create_directories(path.parent_path());
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    throw std::runtime_error("cannot write file: " + path.string());
+  }
+  out << content;
+}
+
+void CopyDirectoryDefaults(const fs::path& source, const fs::path& destination) {
+  if (!fs::exists(source) || !fs::is_directory(source)) {
+    return;
+  }
+  fs::create_directories(destination);
+  std::error_code ec;
+  fs::copy(source, destination,
+           fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+}
+
+void EnsureDefaultAgents(const RuntimeConfig& config) {
+  CopyDirectoryDefaults(config.project_root / ".agents" / "agents", config.agents_dir);
+
+  WriteTextFileIfMissing(
+      config.agents_dir / "code_writer" / "agent.json",
+      nlohmann::json{{"name", "code_writer"},
+                     {"description", "Writes focused backend or tooling changes."},
+                     {"tools", {"read_file", "write_file", "list_dir", "run_command"}},
+                     {"instructions",
+                      "Inspect the workspace first, keep edits scoped, and verify changes."}}
+          .dump(2) +
+          "\n");
+  WriteTextFileIfMissing(
+      config.agents_dir / "bug_analyzer" / "agent.json",
+      nlohmann::json{{"name", "bug_analyzer"},
+                     {"description", "Analyzes logs, stack traces, and failing behavior."},
+                     {"tools", {"read_file", "list_dir", "run_command"}},
+                     {"instructions",
+                      "Diagnose the root cause before proposing or applying fixes."}}
+          .dump(2) +
+          "\n");
+  WriteTextFileIfMissing(
+      config.agents_dir / "smoke_tester" / "agent.json",
+      nlohmann::json{{"name", "smoke_tester"},
+                     {"description", "Runs focused verification and smoke tests."},
+                     {"tools", {"read_file", "list_dir", "run_command"}},
+                     {"instructions",
+                      "Run the smallest meaningful verification and report failures clearly."}}
+          .dump(2) +
+          "\n");
+}
+
+void EnsureDefaultSkills(const RuntimeConfig& config) {
+  CopyDirectoryDefaults(config.project_root / ".agents" / "skills", config.skills_dir);
+  WriteTextFileIfMissing(
+      config.skills_dir / "mothprobe-runtime" / "SKILL.md",
+      "---\n"
+      "name: mothprobe-runtime\n"
+      "description: Default runtime guidance for local MothProbe agents.\n"
+      "---\n\n"
+      "# MothProbe Runtime\n\n"
+      "Use scoped tools only, keep evidence local to `.mothprobe`, and request permission before "
+      "active or destructive work.\n");
+}
+
+void EnsureDefaultJsonStores(const RuntimeConfig& config) {
+  if (!fs::exists(config.workspace_file)) {
+    SaveJsonFileAtomic(config.workspace_file, WorkspaceConfigJson(DefaultWorkspaceConfig(config)));
+  }
+  if (!fs::exists(config.permissions_file)) {
+    SavePermissionConfig(config, DefaultPermissionConfig(config));
+  }
+  if (!fs::exists(config.mcp_clients_file)) {
+    SaveJsonFileAtomic(config.mcp_clients_file,
+                       {{"schema", 1},
+                        {"updated_at", TimestampIso()},
+                        {"clients", nlohmann::json::array()}});
+  }
+}
+
 }  // namespace
 
 fs::path FindProjectRoot() {
@@ -190,8 +427,14 @@ RuntimeConfig LoadRuntimeConfig() {
   config.bin_dir = config.runtime_root / "bin";
   config.caches_dir = config.runtime_root / "caches";
   config.brains_dir = config.runtime_root / "brains";
+  config.agents_dir = config.runtime_root / "agents";
+  config.agent_runs_dir = config.runtime_root / "agent_runs";
+  config.skills_dir = config.runtime_root / "skills";
   config.logs_dir = config.runtime_root / "logs";
   config.audit_file = config.runtime_root / "audit.jsonl";
+  config.workspace_file = config.runtime_root / "workspace.json";
+  config.permissions_file = config.runtime_root / "permissions.json";
+  config.mcp_clients_file = config.runtime_root / "mcp_clients.json";
   return config;
 }
 
@@ -314,10 +557,191 @@ void SaveLlmProviderApiKey(const RuntimeConfig& config, const std::string& provi
 }
 
 void EnsureRuntimeLayout(const RuntimeConfig& config) {
+  fs::create_directories(config.runtime_root);
   fs::create_directories(config.bin_dir);
   fs::create_directories(config.caches_dir);
   fs::create_directories(config.brains_dir);
+  fs::create_directories(config.agents_dir);
+  fs::create_directories(config.agent_runs_dir);
+  fs::create_directories(config.skills_dir);
   fs::create_directories(config.logs_dir);
+  EnsureDefaultAgents(config);
+  EnsureDefaultSkills(config);
+  WriteIfMissing(config.agents_dir / "pentest-agent" / "AGENTS.md", DefaultPentestAgent());
+  WriteIfMissing(config.skills_dir / "mothprobe-skills" / "SKILL.md", DefaultMothprobeSkill());
+  EnsureDefaultJsonStores(config);
+}
+
+ToolPermission PermissionConfig::PermissionFor(const std::string& tool_name) const {
+  const auto it = tools.find(tool_name);
+  return it == tools.end() ? ToolPermission::Ask : it->second;
+}
+
+std::string ToolPermissionName(ToolPermission permission) {
+  switch (permission) {
+    case ToolPermission::Allow:
+      return "allow";
+    case ToolPermission::Ask:
+      return "ask";
+    case ToolPermission::Deny:
+      return "deny";
+  }
+  return "ask";
+}
+
+std::optional<ToolPermission> ParseToolPermission(const std::string& value) {
+  std::string lowered;
+  lowered.reserve(value.size());
+  for (const unsigned char c : value) {
+    lowered.push_back(static_cast<char>(std::tolower(c)));
+  }
+  if (lowered == "allow" || lowered == "allowed") return ToolPermission::Allow;
+  if (lowered == "ask" || lowered == "prompt" || lowered == "approval_required") {
+    return ToolPermission::Ask;
+  }
+  if (lowered == "deny" || lowered == "denied") return ToolPermission::Deny;
+  return std::nullopt;
+}
+
+WorkspaceConfig LoadWorkspaceConfig(const RuntimeConfig& config) {
+  auto workspace = DefaultWorkspaceConfig(config);
+  const auto root = LoadJsonFile(config.workspace_file, nlohmann::json::object());
+  if (root.is_object()) {
+    workspace.readable_paths =
+        PathArrayFromJson(config, root.value("readable_paths", nlohmann::json::array()),
+                          workspace.readable_paths);
+    workspace.writable_paths =
+        PathArrayFromJson(config, root.value("writable_paths", nlohmann::json::array()),
+                          workspace.writable_paths);
+  }
+  return workspace;
+}
+
+nlohmann::json WorkspaceConfigJson(const WorkspaceConfig& config) {
+  return {{"schema", 1},
+          {"project_root", config.project_root.string()},
+          {"runtime_root", config.runtime_root.string()},
+          {"readable_paths", PathArrayJson(config.readable_paths)},
+          {"writable_paths", PathArrayJson(config.writable_paths)}};
+}
+
+PermissionConfig LoadPermissionConfig(const RuntimeConfig& config) {
+  auto permissions = DefaultPermissionConfig(config);
+  const auto root = LoadJsonFile(config.permissions_file, nlohmann::json::object());
+  if (!root.is_object()) {
+    return permissions;
+  }
+
+  if (auto tools = root.find("tools"); tools != root.end() && tools->is_object()) {
+    for (const auto& [name, value] : tools->items()) {
+      if (value.is_string()) {
+        if (auto parsed = ParseToolPermission(value.get<std::string>())) {
+          permissions.tools[name] = *parsed;
+        }
+      }
+    }
+  }
+  permissions.readable_paths =
+      PathArrayFromJson(config, root.value("readable_paths", nlohmann::json::array()),
+                        permissions.readable_paths);
+  permissions.writable_paths =
+      PathArrayFromJson(config, root.value("writable_paths", nlohmann::json::array()),
+                        permissions.writable_paths);
+  return permissions;
+}
+
+void SavePermissionConfig(const RuntimeConfig& config, const PermissionConfig& permissions) {
+  nlohmann::json tools = nlohmann::json::object();
+  for (const auto& [name, permission] : permissions.tools) {
+    tools[name] = ToolPermissionName(permission);
+  }
+  SaveJsonFileAtomic(config.permissions_file,
+                     {{"schema", 1},
+                      {"updated_at", TimestampIso()},
+                      {"tools", std::move(tools)},
+                      {"readable_paths", PathArrayJson(permissions.readable_paths)},
+                      {"writable_paths", PathArrayJson(permissions.writable_paths)}});
+}
+
+std::vector<McpClientConfig> LoadMcpClientConfigs(const RuntimeConfig& config) {
+  const auto root = LoadJsonFile(config.mcp_clients_file, nlohmann::json::object());
+  std::vector<McpClientConfig> clients;
+  if (!root.is_object()) {
+    return clients;
+  }
+  const auto items = root.value("clients", nlohmann::json::array());
+  if (!items.is_array()) {
+    return clients;
+  }
+  for (const auto& item : items) {
+    if (!item.is_object()) {
+      continue;
+    }
+    McpClientConfig client;
+    client.id = item.value("id", std::string{});
+    client.name = item.value("name", client.id);
+    client.transport = item.value("transport", client.transport);
+    client.command = item.value("command", std::string{});
+    client.url = item.value("url", std::string{});
+    client.sse_endpoint = item.value("sse_endpoint", client.sse_endpoint);
+    client.authenticated = item.value("authenticated", false);
+    client.connected = item.value("connected", false);
+    client.status = item.value("status", client.connected ? "connected" : "disconnected");
+    client.created_at = item.value("created_at", std::string{});
+    client.updated_at = item.value("updated_at", std::string{});
+    client.last_error = item.value("last_error", std::string{});
+    client.metadata = item.value("metadata", nlohmann::json::object());
+    if (auto args = item.find("args"); args != item.end() && args->is_array()) {
+      for (const auto& arg : *args) {
+        if (arg.is_string()) client.args.push_back(arg.get<std::string>());
+      }
+    }
+    if (auto env = item.find("env"); env != item.end() && env->is_object()) {
+      for (const auto& [key, value] : env->items()) {
+        if (value.is_string()) client.env[key] = value.get<std::string>();
+      }
+    }
+    if (!client.id.empty()) {
+      clients.push_back(std::move(client));
+    }
+  }
+  return clients;
+}
+
+void SaveMcpClientConfigs(const RuntimeConfig& config,
+                          const std::vector<McpClientConfig>& clients) {
+  nlohmann::json items = nlohmann::json::array();
+  for (const auto& client : clients) {
+    items.push_back(McpClientConfigJson(client, true));
+  }
+  SaveJsonFileAtomic(config.mcp_clients_file,
+                     {{"schema", 1}, {"updated_at", TimestampIso()}, {"clients", items}});
+}
+
+nlohmann::json McpClientConfigJson(const McpClientConfig& client, bool include_secrets) {
+  nlohmann::json args = nlohmann::json::array();
+  for (const auto& arg : client.args) {
+    args.push_back(arg);
+  }
+  nlohmann::json env = nlohmann::json::object();
+  for (const auto& [key, value] : client.env) {
+    env[key] = include_secrets ? value : (value.empty() ? "" : "***");
+  }
+  return {{"id", client.id},
+          {"name", client.name},
+          {"transport", client.transport},
+          {"command", client.command},
+          {"args", args},
+          {"env", env},
+          {"url", client.url},
+          {"sse_endpoint", client.sse_endpoint},
+          {"authenticated", client.authenticated},
+          {"connected", client.connected},
+          {"status", client.status},
+          {"created_at", client.created_at},
+          {"updated_at", client.updated_at},
+          {"last_error", client.last_error},
+          {"metadata", client.metadata}};
 }
 
 std::string ReadTextFileLimited(const fs::path& path, std::size_t max_bytes) {

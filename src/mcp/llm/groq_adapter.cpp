@@ -15,7 +15,9 @@ std::string GroqAdapter::Name() const {
   return "Groq";
 }
 
-ChatResult GroqAdapter::Chat(const std::vector<ChatMessage>& messages) {
+ChatResult GroqAdapter::Chat(const std::vector<ChatMessage>& messages,
+                             const ReasoningConfig& reasoning_config) {
+  (void)reasoning_config;
   if (config_.api_key.empty()) {
     return {false, "", "Groq API key is not configured.", "auth_error", "", 0, false,
             false};

@@ -23,7 +23,8 @@ function roleTitle(msg: ChatMessage) {
 }
 
 function formatDuration(ms?: number) {
-  if (!ms || ms < 1000) return "less than 1s";
+  if (!ms) return "";
+  if (ms < 1000) return "1s";
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -35,11 +36,18 @@ function formatDuration(ms?: number) {
   return parts.join(" ");
 }
 
-function ThoughtBlock({ msg }: { msg: ChatMessage }) {
+function frameLine(left: string, fill: string, right: string, width: number, label = "") {
+  const labelText = label ? ` ${label} ` : "";
+  const fillCount = Math.max(1, width - left.length - right.length - labelText.length);
+  return `${left}${labelText}${fill.repeat(fillCount)}${right}`;
+}
+
+function ThoughtBlock({ msg, width }: { msg: ChatMessage; width: number }) {
   const theme = useStore((state) => state.theme);
   if (!msg.reasoning && !msg.thoughtDurationMs) return null;
 
-  const label = `thought for ${formatDuration(msg.thoughtDurationMs)}`;
+  const duration = formatDuration(msg.thoughtDurationMs);
+  const label = duration ? `thought for ${duration}` : "thought";
   if (!msg.reasoning) {
     return <Text color={theme.muted}>{label}</Text>;
   }
@@ -50,15 +58,24 @@ function ThoughtBlock({ msg }: { msg: ChatMessage }) {
       </Text>
     );
   }
+  const frameWidth = Math.max(32, Math.min(width - 4, 120));
+  const innerWidth = Math.max(20, frameWidth - 4);
   return (
-    <Box borderStyle="single" borderColor={theme.border} paddingX={1} marginTop={1} marginBottom={1} flexDirection="column">
-      <Text color={theme.muted} italic>{label} (ctrl+o collapse)</Text>
-      <MarkdownRenderer content={msg.reasoning} theme={theme} />
+    <Box marginTop={1} marginBottom={1} flexDirection="column" width={frameWidth}>
+      <Text color={theme.border}>{frameLine("+", "-", "+", frameWidth, `${label} ctrl+o collapse`)}</Text>
+      <Box flexDirection="row">
+        <Text color={theme.border}>| </Text>
+        <Box flexDirection="column" width={innerWidth}>
+          <MarkdownRenderer content={msg.reasoning} theme={theme} maxWidth={innerWidth} />
+        </Box>
+        <Text color={theme.border}> |</Text>
+      </Box>
+      <Text color={theme.border}>{frameLine("+", "-", "+", frameWidth)}</Text>
     </Box>
   );
 }
 
-function ChatMessageView({ msg, frame }: { msg: ChatMessage; frame: number }) {
+function ChatMessageView({ msg, frame, width }: { msg: ChatMessage; frame: number; width: number }) {
   const theme = useStore((state) => state.theme);
   const color = roleColor(msg, theme);
 
@@ -85,8 +102,9 @@ function ChatMessageView({ msg, frame }: { msg: ChatMessage; frame: number }) {
   return (
     <Box flexDirection="column">
       <Text color={color}>{roleTitle(msg)}</Text>
-      <ThoughtBlock msg={msg} />
-      <MarkdownRenderer content={`${msg.content}${msg.isTyping ? " |" : ""}`} theme={theme} />
+      <ThoughtBlock msg={msg} width={width} />
+      <MarkdownRenderer content={msg.content} theme={theme} maxWidth={Math.max(24, width - 4)} />
+      {msg.isTyping && <Text color={theme.muted}>|</Text>}
       {msg.interrupted && <Text color={theme.warning}>interrupted</Text>}
     </Box>
   );
@@ -100,6 +118,7 @@ export function ChatArea() {
   const typingMessage = chatHistory.find((message) => message.isTyping);
   const loadingMessage = chatHistory.find((message) => message.isLoading);
   const { columns } = useWindowSize();
+  const contentWidth = Math.max(40, columns - 4);
 
   useEffect(() => {
     if (!typingMessage) return;
@@ -116,9 +135,9 @@ export function ChatArea() {
   return (
     <Box flexDirection="column" flexGrow={1} minHeight={10}>
       {visibleHistory.map((msg) => (
-        <Box key={msg.id} marginBottom={1} flexDirection="column" width={columns}>
-          <ChatMessageView msg={msg} frame={frame} />
-          <Divider width={columns} />
+        <Box key={msg.id} marginBottom={1} flexDirection="column" width={contentWidth}>
+          <ChatMessageView msg={msg} frame={frame} width={contentWidth} />
+          <Divider width={contentWidth} />
         </Box>
       ))}
     </Box>

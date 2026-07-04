@@ -15,7 +15,8 @@ std::string OpenAiCompatibleAdapter::Name() const {
   return config_.provider;
 }
 
-ChatResult OpenAiCompatibleAdapter::Chat(const std::vector<ChatMessage>& messages) {
+ChatResult OpenAiCompatibleAdapter::Chat(const std::vector<ChatMessage>& messages,
+                                         const ReasoningConfig& reasoning_config) {
   if (config_.api_key.empty() && config_.requires_api_key) {
     return {false, "", config_.provider + " API key is not configured.", "auth_error", "", 0,
             false, false};
@@ -31,6 +32,11 @@ ChatResult OpenAiCompatibleAdapter::Chat(const std::vector<ChatMessage>& message
                       {"messages", nlohmann::json::array()}};
   for (const auto& msg : messages) {
     body["messages"].push_back({{"role", msg.role}, {"content", msg.content}});
+  }
+  if (reasoning_config.mode == "advanced") {
+    body["reasoning_effort"] = "high";
+  } else if (reasoning_config.mode == "fast") {
+    body["reasoning_effort"] = "low";
   }
   Headers headers;
   if (!config_.api_key.empty()) headers.emplace_back("Authorization", "Bearer " + config_.api_key);

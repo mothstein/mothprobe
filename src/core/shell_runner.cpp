@@ -22,8 +22,21 @@ constexpr std::size_t kMaxShellOutput = 12000;
 }  // namespace
 
 bool ShellCommandAllowed(const std::string& command) {
+  return ShellCommandAllowed(command, ShellPermissionLevel::Default);
+}
+
+bool ShellCommandAllowed(const std::string& command, ShellPermissionLevel level) {
+  if (command.empty() || command.size() > 500 ||
+      command.find('\0') != std::string::npos ||
+      command.find('\n') != std::string::npos ||
+      command.find('\r') != std::string::npos) {
+    return false;
+  }
+  if (level == ShellPermissionLevel::Full) {
+    return true;
+  }
   static const std::regex unsafe(R"([&|;<>()`])");
-  if (command.empty() || command.size() > 200 || std::regex_search(command, unsafe)) {
+  if (command.size() > 200 || std::regex_search(command, unsafe)) {
     return false;
   }
   std::istringstream in(command);
@@ -35,8 +48,13 @@ bool ShellCommandAllowed(const std::string& command) {
 }
 
 std::string RunShellCommand(const std::string& command, int* exit_code) {
+  return RunShellCommand(command, exit_code, ShellPermissionLevel::Default);
+}
+
+std::string RunShellCommand(const std::string& command, int* exit_code,
+                            ShellPermissionLevel level) {
   *exit_code = -1;
-  if (!ShellCommandAllowed(command)) {
+  if (!ShellCommandAllowed(command, level)) {
     return "Rejected by shell policy.";
   }
 #ifdef _WIN32

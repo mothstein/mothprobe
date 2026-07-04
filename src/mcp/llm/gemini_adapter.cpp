@@ -26,7 +26,8 @@ std::string GeminiAdapter::Name() const {
   return "gemini";
 }
 
-ChatResult GeminiAdapter::Chat(const std::vector<ChatMessage>& messages) {
+ChatResult GeminiAdapter::Chat(const std::vector<ChatMessage>& messages,
+                               const ReasoningConfig& reasoning_config) {
   if (config_.api_key.empty()) {
     return {false, "", "Gemini API key is not configured.", "auth_error", "", 0, false, false};
   }
@@ -40,6 +41,9 @@ ChatResult GeminiAdapter::Chat(const std::vector<ChatMessage>& messages) {
                                             {"parts", nlohmann::json::array({{{"text", PromptText(messages)}}})}}})},
       {"generationConfig", {{"temperature", 0}, {"maxOutputTokens", config_.max_tokens}}},
   };
+  if (reasoning_config.mode == "advanced") {
+    body["generationConfig"]["thinkingConfig"] = {{"thinkingBudget", 8000}};
+  }
 
   auto response = PostJson(url, {}, body.dump());
   if (!response.ok) {

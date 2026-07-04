@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "bin": {
-    "mothprobe-tui": "./dist/main.js"
+    "mothprobe": "./dist/bin.js",
+    "mothprobe-tui": "./dist/bin.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
+    "start": "node dist/bin.js",
     "dev": "tsx src/main.tsx",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

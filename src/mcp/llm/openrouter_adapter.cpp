@@ -15,7 +15,8 @@ std::string OpenRouterAdapter::Name() const {
   return "openrouter";
 }
 
-ChatResult OpenRouterAdapter::Chat(const std::vector<ChatMessage>& messages) {
+ChatResult OpenRouterAdapter::Chat(const std::vector<ChatMessage>& messages,
+                                   const ReasoningConfig& reasoning_config) {
   if (config_.api_key.empty()) {
     return {false, "", "OpenRouter API key is not configured.", "auth_error", "", 0, false,
             false};
@@ -27,6 +28,11 @@ ChatResult OpenRouterAdapter::Chat(const std::vector<ChatMessage>& messages) {
                       {"messages", nlohmann::json::array()}};
   for (const auto& msg : messages) {
     body["messages"].push_back({{"role", msg.role}, {"content", msg.content}});
+  }
+  if (reasoning_config.mode == "advanced") {
+    body["reasoning_effort"] = "high";
+  } else if (reasoning_config.mode == "fast") {
+    body["reasoning_effort"] = "low";
   }
   Headers headers{{"Authorization", "Bearer " + config_.api_key},
                   {"HTTP-Referer", "https://mothprobe.local"},

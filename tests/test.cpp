@@ -190,6 +190,97 @@ TEST_CASE("mothprobe_mcp responds to initialize and tools list", "[mcp]") {
   REQUIRE(prompts["result"]["prompts"].is_array());
   REQUIRE_FALSE(prompts["result"]["prompts"].empty());
 
+  auto workspace =
+      daemon.Request({{"jsonrpc", "2.0"}, {"id", 60}, {"method", "workspace/inspect"}});
+  REQUIRE(workspace["result"]["workspace"]["runtime"]["agents_dir"].is_string());
+  REQUIRE(workspace["result"]["workspace"]["permissions"]["tools"].is_object());
+
+  auto agents = daemon.Request({{"jsonrpc", "2.0"}, {"id", 61}, {"method", "agents/list"}});
+  REQUIRE(agents["result"]["agents"].is_array());
+  REQUIRE_FALSE(agents["result"]["agents"].empty());
+
+  auto code_writer =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 62},
+                      {"method", "agents/get"},
+                      {"params", {{"name", "code_writer"}}}});
+  REQUIRE(code_writer["result"]["agent"]["name"] == "code_writer");
+
+  const auto smoke_agent_name = "smoke_agent_" + std::to_string(GetCurrentProcessId());
+  auto created_agent =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 63},
+                      {"method", "agents/create"},
+                      {"params",
+                       {{"name", smoke_agent_name},
+                        {"description", "Smoke test agent"},
+                        {"system_prompt", "You are a smoke test agent."}}}});
+  REQUIRE(created_agent["result"]["agent"]["name"] == smoke_agent_name);
+
+  auto permissions =
+      daemon.Request({{"jsonrpc", "2.0"}, {"id", 64}, {"method", "permission/get"}});
+  REQUIRE(permissions["result"]["permissions"]["tools"].is_object());
+
+  auto permission_set =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 65},
+                      {"method", "permission/set"},
+                      {"params", {{"tool", "run_command"}, {"permission", "ask"}}}});
+  REQUIRE(permission_set["result"]["permissions"]["tools"]["run_command"] == "ask");
+
+  const auto client_name = "smoke-client-" + std::to_string(GetCurrentProcessId());
+  auto client_add =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 66},
+                      {"method", "mcp_clients/add"},
+                      {"params",
+                       {{"name", client_name},
+                        {"transport", "stdio"},
+                        {"command", "mothprobe_mcp"}}}});
+  REQUIRE(client_add["result"]["client"]["name"] == client_name);
+
+  auto client_get =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 67},
+                      {"method", "mcp_clients/get"},
+                      {"params", {{"name", client_name}}}});
+  REQUIRE(client_get["result"]["client"]["name"] == client_name);
+
+  auto client_login =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 68},
+                      {"method", "mcp_clients/login"},
+                      {"params", {{"name", client_name}, {"token", "test-token"}}}});
+  REQUIRE(client_login["result"]["client"]["authenticated"] == true);
+
+  auto client_connect =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 69},
+                      {"method", "mcp_clients/connect"},
+                      {"params", {{"name", client_name}}}});
+  REQUIRE(client_connect["result"]["client"]["connected"] == true);
+
+  auto client_disconnect =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 70},
+                      {"method", "mcp_clients/disconnect"},
+                      {"params", {{"name", client_name}}}});
+  REQUIRE(client_disconnect["result"]["client"]["connected"] == false);
+
+  auto client_logout =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 71},
+                      {"method", "mcp_clients/logout"},
+                      {"params", {{"name", client_name}}}});
+  REQUIRE(client_logout["result"]["client"]["authenticated"] == false);
+
+  auto client_remove =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 72},
+                      {"method", "mcp_clients/remove"},
+                      {"params", {{"name", client_name}}}});
+  REQUIRE(client_remove["result"]["removed"] == client_name);
+
   auto model_error =
       daemon.Request({{"jsonrpc", "2.0"},
                       {"id", 7},
@@ -206,5 +297,98 @@ TEST_CASE("mothprobe_mcp responds to initialize and tools list", "[mcp]") {
                       {"params", {{"provider", "missing-provider"}, {"api_key", "test-key"}}}});
   REQUIRE(configure["id"] == 8);
   REQUIRE(configure["error"]["code"] == -32602);
+
+  auto session =
+      daemon.Request({{"jsonrpc", "2.0"}, {"id", 9}, {"method", "chat/new_session"}});
+  REQUIRE(session["result"]["session"]["session_id"].is_string());
+  REQUIRE(session["result"]["session"]["messages"].is_array());
+
+  auto reasoning =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 10},
+                      {"method", "llm/set_reasoning"},
+                      {"params", {{"mode", "advanced"}}}});
+  REQUIRE(reasoning["result"]["reasoning_mode"] == "advanced");
+
+  auto sessions =
+      daemon.Request({{"jsonrpc", "2.0"}, {"id", 11}, {"method", "chat/list_sessions"}});
+  REQUIRE(sessions["result"]["sessions"].is_array());
+  REQUIRE_FALSE(sessions["result"]["sessions"].empty());
+
+  const auto session_id = session["result"]["session"]["session_id"].get<std::string>();
+  auto loaded =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 12},
+                      {"method", "chat/load_session"},
+                      {"params", {{"session_id", session_id}}}});
+  REQUIRE(loaded["result"]["session"]["session_id"] == session_id);
+
+  auto cleared =
+      daemon.Request({{"jsonrpc", "2.0"}, {"id", 13}, {"method", "chat/clear"}});
+  REQUIRE(cleared["result"]["session"]["messages"].empty());
+
+  auto workspace2 =
+      daemon.Request({{"jsonrpc", "2.0"}, {"id", 14}, {"method", "workspace/inspect"}});
+  REQUIRE(workspace2["result"]["workspace_path"].is_string());
+  REQUIRE(workspace2["result"]["agents"].is_array());
+  REQUIRE(workspace2["result"]["skills"].is_array());
+
+  auto agents2 = daemon.Request({{"jsonrpc", "2.0"}, {"id", 15}, {"method", "agents/list"}});
+  REQUIRE(agents2["result"]["agents"].is_array());
+  const auto has_pentest_agent =
+      std::any_of(agents2["result"]["agents"].begin(), agents2["result"]["agents"].end(),
+                  [](const auto& agent) { return agent["name"] == "pentest-agent"; });
+  REQUIRE(has_pentest_agent);
+
+  auto selected =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 16},
+                      {"method", "agents/select"},
+                      {"params", {{"name", "pentest-agent"}}}});
+  REQUIRE(selected["result"]["agent"]["name"] == "pentest-agent");
+
+  auto permission =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 17},
+                      {"method", "permission/set"},
+                      {"params", {{"level", "full"}}}});
+  REQUIRE(permission["result"]["permission_level"] == "full");
+
+  auto shell =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 18},
+                      {"method", "tools/call"},
+                      {"params", {{"name", "run_command"},
+                                  {"arguments", {{"command", "echo mothprobe"}}}}}});
+  REQUIRE(shell["result"]["isError"] == false);
+
+  const auto client_name2 = "smoke-local";
+  auto removed_existing =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 19},
+                      {"method", "mcp_clients/remove"},
+                      {"params", {{"name", client_name2}}}});
+  (void)removed_existing;
+
+  auto client_added =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 20},
+                      {"method", "mcp_clients/add"},
+                      {"params", {{"name", client_name2},
+                                  {"transport", "stdio"},
+                                  {"command", "node"},
+                                  {"args", nlohmann::json::array({"server.js"})}}}});
+  REQUIRE(client_added["result"]["client"]["name"] == client_name2);
+
+  auto clients =
+      daemon.Request({{"jsonrpc", "2.0"}, {"id", 21}, {"method", "mcp_clients/list"}});
+  REQUIRE(clients["result"]["clients"].is_array());
+
+  auto client_removed =
+      daemon.Request({{"jsonrpc", "2.0"},
+                      {"id", 22},
+                      {"method", "mcp_clients/remove"},
+                      {"params", {{"name", client_name2}}}});
+  REQUIRE(client_removed["result"]["removed"] == client_name2);
 }
 #endif
